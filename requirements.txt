@@ -1,4 +1,7 @@
+# first line is to install kg package in editable (i.e. -e) mode
+-e .
 jupyterlab
 yapf
 requests
 pandas
+pytest
