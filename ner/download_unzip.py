@@ -83,11 +83,18 @@ def main(args):
     p = subprocess.Popen(cmd)
     exit_status = p.wait()
     if exit_status != 0:
-        raise Exception(
+        print(
             'It appears that you do not have the Reuters Corpus file: rcv1.tar.xz - '
             'either place the file in the root of the extracted ner folder or '
             'visit https://trec.nist.gov/data/reuters/reuters.html to request a copy.'
         )
+        print('Downloading data from another source...')
+        train_data = 'https://raw.githubusercontent.com/patverga/torch-ner-nlp-from-scratch/master/data/conll2003/eng.train'
+        val_data = 'https://raw.githubusercontent.com/patverga/torch-ner-nlp-from-scratch/master/data/conll2003/eng.testa'
+        test_data = 'https://raw.githubusercontent.com/patverga/torch-ner-nlp-from-scratch/master/data/conll2003/eng.testb'
+        train_file_path = download_save_file(train_data, extracted_path)
+        val_file_path = download_save_file(val_data, extracted_path)
+        test_file_path = download_save_file(test_data, extracted_path)
     else:
         print('CoNLL-2003 English dataset successfully built.')
 
@@ -96,7 +103,7 @@ def main(args):
         _, tail = os.path.split(args.reuters_file_path)
         os.remove(os.path.join(extracted_path, tail))
     except:
-        print('No --reuters-file-path passed - will cause issues.')
+        pass
 
 
 if __name__ == '__main__':
