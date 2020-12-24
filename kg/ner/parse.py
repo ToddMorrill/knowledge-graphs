@@ -1,18 +1,16 @@
 """
 This module contains a class to parse CoNLL-2003 data into a user-friendly format.
 
+
 Examples:
     $ python parse.py \
         --data-directory /Users/tmorrill002/Documents/datasets/conll/raw/ner \
         --save-directory /Users/tmorrill002/Documents/datasets/conll/transformed
 
 TODO: docstrings
-TODO: create python package so that this can imported anywhere
-TODO: add data checks to a test script
 """
 import argparse
 import os
-from numpy.lib.npyio import save
 
 import pandas as pd
 import numpy as np
