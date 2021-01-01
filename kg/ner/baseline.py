@@ -1,5 +1,13 @@
 """
-This module will implement a baseline NER tagger.
+This module implements a baseline NER tagger and employs the following principles:
+1) Only select complete named entities which appear in the training data.
+2) Longer phrases are preferred over shorter ones.
+3) Phrases with more than one entity tag are discarded.
+
+Current baseline metrics (token level evaluation):
+Macro average precision: 0.88
+Macro average recall: 0.38
+Macro F1: 0.46
 
 Examples:
     $ python baseline.py \
@@ -18,10 +26,14 @@ Experiments:
 1) add validation set to train_dict - small increase for precision/recall/f1
 2) try lowercasing everything - decrease in precision. recall/f1 steady.
 3) check implementation for bugs - found bug in the way I was dropping duplicates.
+4) Evaluate at the entity level (as opposed to the token level).
+
+TODO: refactor and docstrings.
 """
 
 import argparse
 from functools import partial
+import math
 import os
 
 import numpy as np
@@ -98,6 +110,15 @@ def increment_id(x, increment):
     return x + increment
 
 
+def add_tag_ids(df):
+    tag_id = df['NER_Tag_ID'].max() + 1
+    for idx, row in df.iterrows():
+        if math.isnan(row['NER_Tag_ID']):
+            df.loc[idx, 'NER_Tag_ID'] = tag_id
+            tag_id += 1
+    return df
+
+
 def main(args):
     file_names = ['train.csv', 'validation.csv', 'test.csv']
 
@@ -149,9 +170,29 @@ def main(args):
         (df_dict['test.csv'], test_sentences_df[['NER_Tag_Prediction'
                                                  ]].reset_index(drop=True)),
         axis=1)
+    print('Token level performance:')
     print(
         classification_report(test_preds_df['NER_Tag_Normalized'],
                               test_preds_df['NER_Tag_Prediction']))
+
+    # add in unique ids so we don't drop the 'O' category in the groupby
+    test_preds_df = add_tag_ids(test_preds_df)
+
+    # should really be grouping by the predicted entities
+    test_preds_entity_df = test_preds_df.groupby(
+        ['NER_Tag_ID', 'NER_Tag_Normalized'],
+        as_index=False)[['Token', 'NER_Tag_Prediction'
+                         ]].agg(Tokens=('Token', list),
+                                NER_Tag_Predictions=('NER_Tag_Prediction',
+                                                     list))
+
+    # majority vote
+    test_preds_entity_df['NER_Tag_Prediction'] = test_preds_entity_df[
+        'NER_Tag_Predictions'].apply(lambda x: max(set(x), key=x.count))
+    print('Entity level performance:')
+    print(
+        classification_report(test_preds_entity_df['NER_Tag_Normalized'],
+                              test_preds_entity_df['NER_Tag_Prediction']))
 
 
 if __name__ == '__main__':
