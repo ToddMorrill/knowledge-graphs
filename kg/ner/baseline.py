@@ -12,13 +12,19 @@ Implementation notes:
 2) Take max length of the keys to limit the max subsequence of a sentence.
 3) Run sliding window over test sentences. Iterate over each token and then expand the subsequence one token at a time until you reach the maximum obtained in step 2 above. Check if these subsequences are present in the training dictionary, else tag with 'O'.
 4) Convert back to pandas column vector (may need to normalize the test labels for comparison).
-5) Use standard sklearn evaluation on columns of labels to evaluate. 
+5) Use standard sklearn evaluation on columns of labels to evaluate.
+
+Experiments:
+1) add validation set to train_dict
+2) try lowercasing everything
+3) check implementation for bugs
 """
 
 import argparse
 from functools import partial
 import os
 
+import numpy as np
 import pandas as pd
 from sklearn.metrics import classification_report
 
@@ -74,6 +80,10 @@ def get_tags(train_dict, sentence, max_key_len):
             i += 1
     return labeled_sentence
 
+def increment_id(x, increment):
+    if x == np.nan:
+        return np.nan
+    return x + increment
 
 def main(args):
     file_names = ['train.csv', 'validation.csv', 'test.csv']
@@ -84,8 +94,20 @@ def main(args):
         file_path = os.path.join(args.data_directory, file_name)
         df_dict[file_name] = pd.read_csv(file_path)
 
+    # increment id tags
+    max_article_id = df_dict['train.csv']['Article_ID'].max() + 1
+    max_ner_tag_id = df_dict['train.csv']['NER_Tag_ID'].max() + 1
+    increment_article_id = partial(increment_id, increment=max_article_id)
+    increment_tag_id = partial(increment_id, increment=max_ner_tag_id)
+
+    df_dict['validation.csv']['Article_ID'] = df_dict['validation.csv']['Article_ID'].apply(increment_article_id)
+    df_dict['validation.csv']['NER_Tag_ID'] = df_dict['validation.csv']['NER_Tag_ID'].apply(increment_tag_id)
+
+    # combine train/validation set
+    train_val_df = pd.concat((df_dict['train.csv'], df_dict['validation.csv']), axis=0)
+
     # create training dictionary
-    train_dict = create_train_dict(df_dict['train.csv'])
+    train_dict = create_train_dict(train_val_df)
 
     # get max key length
     max_key_len = max([len(x) for x in list(train_dict.keys())])
