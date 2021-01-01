@@ -16,9 +16,11 @@ Implementation notes:
 """
 
 import argparse
+from functools import partial
 import os
 
 import pandas as pd
+from sklearn.metrics import classification_report
 
 
 def create_train_dict(df):
@@ -50,23 +52,28 @@ def create_train_dict(df):
 
 
 def get_tags(train_dict, sentence, max_key_len):
-    labeled_sentence = [('placeholder', 'placeholder')] * len(sentence)
+    labeled_sentence = [('placeholder', 'O')] * len(sentence)
     i = 0
     while i != len(sentence):
+        broke = False
         for j in range(1, max_key_len):
-            end_index = min(i+j, len(sentence))
+            end_index = min(i + j, len(sentence))
             sub_sentence = tuple(sentence[i:end_index])
             if sub_sentence in train_dict:
                 entity_type = train_dict[sub_sentence]
                 tags = [(tok, entity_type) for tok in sub_sentence]
                 labeled_sentence[i:end_index] = tags
                 i += j
+                broke=True
                 break
             else:
                 tags = [(tok, 'O') for tok in sub_sentence]
                 labeled_sentence[i:end_index] = tags
-        i += 1
+        # if nothing found
+        if not broke:
+            i += 1
     return labeled_sentence
+
 
 def main(args):
     file_names = ['train.csv', 'validation.csv', 'test.csv']
@@ -82,12 +89,23 @@ def main(args):
 
     # get max key length
     max_key_len = max([len(x) for x in list(train_dict.keys())])
-    
+
     # transform test sentences
-    test_sentences_df = df_dict['test.csv'].groupby(['Sentence_ID'], as_index=False).agg(Sentence=('Token', list))
-    test_sentence = test_sentences_df.iloc[0]['Sentence']
-    pred_sentence = get_tags(train_dict, test_sentence, max_key_len)
+    test_sentences_df = df_dict['test.csv'].groupby(
+        ['Article_ID','Sentence_ID'], as_index=False).agg(Sentence=('Token', list))
+    # test_sentence = test_sentences_df.iloc[0]['Sentence']
+    # pred_sentence = get_tags(train_dict, test_sentence, max_key_len)
+    get_tags_partial = partial(get_tags, train_dict=train_dict, max_key_len=max_key_len)
+    test_sentences_df['Tagged_Sentence'] = test_sentences_df['Sentence'].apply(lambda x: get_tags_partial(sentence=x))
+    test_sentences_df = test_sentences_df[['Article_ID', 'Sentence_ID', 'Tagged_Sentence']]
+    test_sentences_df = test_sentences_df.explode('Tagged_Sentence')
+    test_sentences_df[['Token', 'NER_Tag_Prediction']] = test_sentences_df['Tagged_Sentence'].apply(pd.Series)
+    test_sentences_df = test_sentences_df.drop(columns=['Tagged_Sentence'])
+    # test_sentences_df.groupby('NER_Tag_Prediction').count()
+    test_preds_df = pd.concat((df_dict['test.csv'], test_sentences_df[['NER_Tag_Prediction']].reset_index(drop=True)), axis=1)
+    print(classification_report(test_preds_df['NER_Tag_Normalized'], test_preds_df['NER_Tag_Prediction']))
     breakpoint()
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

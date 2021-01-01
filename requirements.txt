@@ -5,3 +5,4 @@ yapf
 requests
 pandas
 pytest
+scikit-learn
