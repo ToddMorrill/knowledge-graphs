@@ -6,3 +6,4 @@ requests
 pandas
 pytest
 scikit-learn
+torch
