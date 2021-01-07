@@ -5,6 +5,7 @@ Examples:
     $ python download_unzip.py \
         --url https://www.clips.uantwerpen.be/conll2003/ner.tgz \
         --save-directory /Users/tmorrill002/Documents/datasets/conll/raw
+        --reuters-file-path /Users/tmorrill002/Documents/datasets/reuters/rcv1.tar.xz
 """
 import argparse
 import os
