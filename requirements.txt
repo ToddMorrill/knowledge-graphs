@@ -7,3 +7,4 @@ pandas
 pytest
 scikit-learn
 torch
+pyyaml

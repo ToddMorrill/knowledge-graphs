@@ -1,0 +1,8 @@
+# data parameters
+data_dir: /Users/tmorrill002/Documents/datasets/conll/transformed
+model_dir: /Users/tmorrill002/Documents/datasets/conll/model
+
+# model parameters
+embedding_dim: 128
+hidden_size: 128
+batch_size: 16
