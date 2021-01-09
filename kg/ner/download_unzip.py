@@ -4,7 +4,7 @@ This module downloads CoNLL 2003 data and saves it to the specified repository.
 Examples:
     $ python download_unzip.py \
         --url https://www.clips.uantwerpen.be/conll2003/ner.tgz \
-        --save-directory /Users/tmorrill002/Documents/datasets/conll/raw
+        --save-directory /Users/tmorrill002/Documents/datasets/conll/raw \
         --reuters-file-path /Users/tmorrill002/Documents/datasets/reuters/rcv1.tar.xz
 """
 import argparse
@@ -79,9 +79,9 @@ def main(args):
         print('No --reuters-file-path passed - will cause issues.')
 
     # Build the train/test datasets
-    print('Attempting to build the CoNLL-2003 English dataset...')
+    print('Building the CoNLL-2003 English dataset...')
     cmd = ['/bin/bash', f'{extracted_path}/bin/make.eng.2016']
-    p = subprocess.Popen(cmd)
+    p = subprocess.Popen(cmd, cwd=extracted_path)
     exit_status = p.wait()
     if exit_status != 0:
         print(

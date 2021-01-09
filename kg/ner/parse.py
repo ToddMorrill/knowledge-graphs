@@ -6,8 +6,6 @@ Examples:
     $ python parse.py \
         --data-directory /Users/tmorrill002/Documents/datasets/conll/raw/ner \
         --save-directory /Users/tmorrill002/Documents/datasets/conll/transformed
-
-TODO: docstrings
 """
 import argparse
 import os
@@ -43,7 +41,13 @@ class CoNLLParser(object):
     def _split_documents(self) -> None:
         """Split document by the delimiters.
         """
-        self.data = self.data.split('-DOCSTART- -X- -X- O\n\n')[1:]
+        temp = self.data.split('-DOCSTART- -X- O O\n\n')
+        if len(temp) > 1:
+            # train/val set
+            self.data = temp[1:]
+        else:
+            # test set
+            self.data = self.data.split('-DOCSTART- -X- -X- O\n\n')[1:]
 
     def _split_sentences(self) -> None:
         """Split sentences by the delimiters.
@@ -273,16 +277,11 @@ class CoNLLParser(object):
         Returns:
             str: Normalized entity tag.
         """
-        if x == 'I-LOC' or x == 'B-LOC':
-            return 'LOC'
-        elif x == 'I-PER' or x == 'B-PER':
-            return 'PER'
-        elif x == 'I-MISC' or x == 'B-MISC':
-            return 'MISC'
-        elif x == 'I-ORG' or x == 'B-ORG':
-            return 'ORG'
-        else:
+        if x == 'O':
             return 'O'
+        else:
+            # e.g. 'I-LOC' -> 'LOC' or 'B-LOC' -> 'LOC'
+            return x[2:]
 
     def to_df(self) -> pd.DataFrame:
         """Converts parsed CoNLL-2003 data into a Pandas DataFrame.

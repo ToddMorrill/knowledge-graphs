@@ -27,8 +27,6 @@ Experiments:
 2) try lowercasing everything - decrease in precision. recall/f1 steady.
 3) check implementation for bugs - found bug in the way I was dropping duplicates, major increase in performance.
 4) Evaluate at the entity level (as opposed to the token level) - ~1% decrease across the board.
-
-TODO: refactor and docstrings.
 """
 
 import argparse
