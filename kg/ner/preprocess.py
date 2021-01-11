@@ -2,7 +2,7 @@
 This module contains preprocessing code to prepare data for training and inference.
 
 Examples:
-    $ python preprocessor.py \
+    $ python preprocess.py \
         --config configs/baseline.yaml
 """
 
@@ -14,8 +14,9 @@ from types import SimpleNamespace
 import pandas as pd
 import torch
 import torchtext
-from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
+from torch.nn.utils.rnn import pad_sequence
 import yaml
+from yaml import parser
 
 
 class CoNLL2003Dataset(torch.utils.data.Dataset):
@@ -60,6 +61,7 @@ class Preprocessor(object):
         self.config = SimpleNamespace(**config)
 
         self.vocab, self.label_dict = self._create_vocabs()
+        self.idx_to_label = {v:k for k, v in self.label_dict.items()}
 
     def _create_vocabs(self):
         # load train data to build the dictionaries
@@ -81,31 +83,37 @@ class Preprocessor(object):
         return pd.read_csv(file_path)
 
     @staticmethod
-    def _collate_fn(batch):
-        sentence_indices, sentence_labels = zip(*batch)
+    def _collate_fn(batch, train=True):
+        if train:
+            sentence_indices, sentence_labels = zip(*batch)
+        else:
+            sentence_indices = batch
         sentence_lens = [len(x) for x in sentence_indices]
 
         # vocab['<pad>'] = 1
         sentences_padded = pad_sequence(sentence_indices,
                                         batch_first=True,
                                         padding_value=1)
-        labels_padded = pad_sequence(sentence_labels,
-                                     batch_first=True,
-                                     padding_value=-1)
+        if train:
+            labels_padded = pad_sequence(sentence_labels,
+                                         batch_first=True,
+                                         padding_value=-1)
 
-        return (sentences_padded, sentence_lens), labels_padded
+            return (sentences_padded, sentence_lens), labels_padded
+        else:
+            return (sentences_padded, sentence_lens)
 
     def get_train_datasets(self):
         train_file_path = os.path.join(self.config.data_dir, 'train.csv')
         val_file_path = os.path.join(self.config.data_dir, 'validation.csv')
         test_file_path = os.path.join(self.config.data_dir, 'test.csv')
 
-        train_dataset = CoNLL2003Dataset(
-            self._load_csv(train_file_path), self.vocab, self.label_dict)
-        val_dataset = CoNLL2003Dataset(
-            self._load_csv(val_file_path), self.vocab, self.label_dict)
-        test_dataset = CoNLL2003Dataset(
-            self._load_csv(test_file_path), self.vocab, self.label_dict)
+        train_dataset = CoNLL2003Dataset(self._load_csv(train_file_path),
+                                         self.vocab, self.label_dict)
+        val_dataset = CoNLL2003Dataset(self._load_csv(val_file_path),
+                                       self.vocab, self.label_dict)
+        test_dataset = CoNLL2003Dataset(self._load_csv(test_file_path),
+                                        self.vocab, self.label_dict)
         return train_dataset, val_dataset, test_dataset
 
     def get_train_dataloaders(self):
@@ -120,3 +128,40 @@ class Preprocessor(object):
         test_dataloader = torch.utils.data.DataLoader(
             test_dataset, batch_size=16, collate_fn=Preprocessor._collate_fn)
         return train_dataloader, val_dataloader, test_dataloader
+
+    @staticmethod
+    def _tokenize(sentence):
+        return sentence.split(' ')
+
+    def _preprocess(self, sentence):
+        tokenized_sentence = self._tokenize(sentence)
+        indices = []
+        for token in tokenized_sentence:
+            indices.append(self.vocab[token])
+        return torch.tensor(indices)
+
+    def preprocess(self, sentences):
+        preprocessed = []
+        if isinstance(sentences, str):
+            preprocessed.append(self._preprocess(sentences))
+        else:
+            for sentence in sentences:
+                preprocessed.append(self._preprocess(sentence))
+        return self._collate_fn(preprocessed, train=False)
+
+
+def main(args):
+    preprocessor = Preprocessor(args.config)
+    sample_sentence = 'Todd Morrill lives in New York City.'
+    prepared_sentence = preprocessor.preprocess(sample_sentence)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--config',
+        type=str,
+        help='File path where the model configuration file is located.',
+        required=True)
+    args = parser.parse_args()
+    main(args)
