@@ -16,7 +16,13 @@ from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_se
 
 
 class LSTM(nn.Module):
-    def __init__(self, config):
+    """Vanilla LSTM."""
+    def __init__(self, config: SimpleNamespace) -> None:
+        """Define components of the network.
+
+        Args:
+            config (SimpleNamespace): Configuration mappings.
+        """
         super().__init__()
         self.embedding = nn.Embedding(config.vocab_size, config.embedding_dim)
         self.lstm = nn.LSTM(input_size=config.embedding_dim,
@@ -24,7 +30,15 @@ class LSTM(nn.Module):
                             batch_first=True)
         self.fc = nn.Linear(config.hidden_size, config.num_classes)
 
-    def forward(self, batch):
+    def forward(self, batch: tuple) -> torch.Tensor:
+        """Forward pass of the network.
+
+        Args:
+            batch (tuple): sentences, lengths
+
+        Returns:
+            torch.Tensor: Log of the softmax for each token.
+        """
         sentences, lengths = batch
         embeds = self.embedding(sentences)
         embeds = pack_padded_sequence(embeds,

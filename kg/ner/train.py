@@ -119,6 +119,19 @@ def train_epoch(model, i, dataloader, optimizer):
     return model, optimizer
 
 
+def save_model(model, optimizer, i, config):
+    # save the model
+    state = {
+        'model': model.state_dict(),
+        'optimizer': optimizer.state_dict(),
+        'epoch': i
+    }
+    save_file_path = os.path.join(config.run_dir, 'model.pt')
+    torch.save(state, save_file_path)
+    print('Saved best model.')
+    return save_file_path
+
+
 def train(model, dataloaders, optimizer, config):
     train_dataloader, val_dataloader, test_dataloader = dataloaders
     running_patience = config.patience
@@ -133,14 +146,7 @@ def train(model, dataloaders, optimizer, config):
             best_val_loss = val_loss
 
             # save the model
-            state = {
-                'model': model.state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'epoch': i
-            }
-            save_file_path = os.path.join(config.run_dir, 'model.pt')
-            torch.save(state, save_file_path)
-            print('Saved best model.')
+            save_file_path = save_model(model, optimizer, i, config)
 
         else:
             running_patience -= 1
@@ -163,6 +169,7 @@ def train(model, dataloaders, optimizer, config):
 
     # run test set eval
     test_loss = evaluate(model, test_dataloader, 'Test', print_report=True)
+    return model
 
 
 def translate_predictions(batch, label_dict):
