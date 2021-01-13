@@ -14,6 +14,7 @@ import argparse
 import os
 import time
 import pickle
+from types import SimpleNamespace
 
 import numpy as np
 from sklearn.metrics import accuracy_score, classification_report
@@ -21,58 +22,25 @@ import torch
 import torch.optim as optim
 import yaml
 
-from kg.ner.model import LSTM
+from kg.ner.model import LSTM, loss_fn, get_predictions, recover_labels, translate_predictions
 from kg.ner.preprocess import Preprocessor
 
 
-def loss_fn(outputs, labels):
-    labels = labels.reshape(-1)
-    mask = (labels >= 0).float()
-    labels = labels % outputs.shape[1]
-    num_tokens = mask.sum()
-    return -torch.sum(
-        outputs[range(outputs.shape[0]), labels] * mask) / num_tokens
+def evaluate(model: torch.nn.Module,
+             dataloader: torch.utils.data.dataloader,
+             split: str = 'Validation',
+             print_report: bool = False) -> float:
+    """Evaluate the model on a cut of the data, optionally printing a full classification report.
 
+    Args:
+        model (torch.nn.Module): Trained model.
+        dataloader (torch.utils.data.dataloader): Dataloader containing data to evaluate.
+        split (str, optional): String that will be printed to denote which set (e.g. Validation, Test, etc.) is being evaluated. Defaults to 'Validation'.
+        print_report (bool, optional): If True, print a full classification report. Defaults to False.
 
-def get_predictions(output, lengths, concatenate=True):
-    # extract predictions
-    max_len = max(lengths)
-    preds = output.argmax(dim=1)
-    i = 0
-    preds_list = []
-    for length in lengths:
-        start = i * max_len
-        stop = start + length
-        preds_list.append(preds[start:stop])
-        i += 1
-    if concatenate:
-        return torch.cat(preds_list)
-    return preds_list
-
-
-def recover_labels(padded_labels, lengths):
-    # extract labels
-    max_len = max(lengths)
-    labels_vector = padded_labels.reshape(-1)
-    i = 0
-    labels_list = []
-    for length in lengths:
-        start = i * max_len
-        stop = start + length
-        labels_list.append(labels_vector[start:stop])
-        i += 1
-    return torch.cat(labels_list)
-
-
-def accuracy(output, sentences, labels):
-    batch_preds = get_predictions(output, sentences[1])
-    batch_labels = recover_labels(labels, sentences[1])
-    raw_acc = accuracy_score(batch_labels, batch_preds)
-    # acc = round(raw_acc * 100, 2)
-    return raw_acc
-
-
-def evaluate(model, dataloader, split='Validation', print_report=False):
+    Returns:
+        float: Average loss score.
+    """
     # monitor validation loss
     model.eval()
     eval_loss_scores = []
@@ -98,9 +66,20 @@ def evaluate(model, dataloader, split='Validation', print_report=False):
     return eval_loss
 
 
-def train_epoch(model, i, dataloader, optimizer):
+def train_epoch(model: torch.nn.Module,
+                dataloader: torch.utils.data.dataloader,
+                optimizer: torch.optim) -> tuple:
+    """Train the model for one epoch and update the weights.
+
+    Args:
+        model (torch.nn.Module): Model to train.
+        dataloader (torch.utils.data.dataloader): Train dataloader.
+        optimizer (torch.optim): Optimizer to apply gradient updates.
+
+    Returns:
+        tuple: model, optimizer
+    """
     model.train()
-    print(f'Epoch number: {i}')
     j = 0
     for sentences, labels in dataloader:
         output = model(sentences)
@@ -119,7 +98,19 @@ def train_epoch(model, i, dataloader, optimizer):
     return model, optimizer
 
 
-def save_model(model, optimizer, i, config):
+def save_model(model: torch.nn.Module, optimizer: torch.optim, i: int,
+               config: SimpleNamespace) -> str:
+    """Save a checkpoint of the model.
+
+    Args:
+        model (torch.nn.Module): Model to be saved.
+        optimizer (torch.optim): Optimizer to be saved.
+        i (int): Number of epochs the model was trained for.
+        config (SimpleNamespace): Configuration mapping containing the save directory.
+
+    Returns:
+        str: Fully specified file path where the model was saved.
+    """
     # save the model
     state = {
         'model': model.state_dict(),
@@ -128,15 +119,28 @@ def save_model(model, optimizer, i, config):
     }
     save_file_path = os.path.join(config.run_dir, 'model.pt')
     torch.save(state, save_file_path)
-    print('Saved best model.')
+    print('Saved model.')
     return save_file_path
 
 
-def train(model, dataloaders, optimizer, config):
+def train(model: torch.nn.Module, dataloaders: tuple, optimizer: torch.optim,
+          config: SimpleNamespace) -> torch.nn.Module:
+    """Main training loop along with evaluation procedures.
+
+    Args:
+        model (torch.nn.Module): Model to be trained and evaluated.
+        dataloaders (tuple): train_dataloader, val_dataloader, test_dataloader
+        optimizer (torch.optim): Optimizer to apply gradient updates
+        config (SimpleNamespace): Configuration mapping containing model hyperparameters.
+
+    Returns:
+        torch.nn.Module: Trained model.
+    """
     train_dataloader, val_dataloader, test_dataloader = dataloaders
     running_patience = config.patience
     best_val_loss = float('inf')
     for i in range(1, config.epochs + 1):
+        print(f'Epoch number: {i}')
         model, optimizer = train_epoch(model, i, train_dataloader, optimizer)
         val_loss = evaluate(model, val_dataloader, 'Validation')
 
@@ -170,16 +174,6 @@ def train(model, dataloaders, optimizer, config):
     # run test set eval
     test_loss = evaluate(model, test_dataloader, 'Test', print_report=True)
     return model
-
-
-def translate_predictions(batch, label_dict):
-    preds = []
-    for pred_sequence in batch:
-        pred_list = []
-        for pred in pred_sequence.tolist():
-            pred_list.append(label_dict[pred])
-        preds.append(pred_list)
-    return preds
 
 
 def main(args):

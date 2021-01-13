@@ -1,0 +1,10 @@
+# data parameters
+data_dir: data_samples
+model_dir: saved_data
+
+# model parameters
+embedding_dim: 128
+hidden_size: 128
+batch_size: 16
+patience: 3 # the number of epochs to wait for validation loss to decrease
+epochs: 50 # let the model train until the validation loss stops improving for 'patience' epochs

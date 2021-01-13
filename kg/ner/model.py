@@ -8,7 +8,7 @@ import argparse
 from types import SimpleNamespace
 
 import torch
-from torch._C import dtype
+from torch._C import T, dtype
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.sparse import Embedding
@@ -47,12 +47,105 @@ class LSTM(nn.Module):
                                       enforce_sorted=False)
         packed_activations, _ = self.lstm(embeds)
         activations, lengths = pad_packed_sequence(packed_activations,
-                                          batch_first=True,
-                                          padding_value=1)
-        
+                                                   batch_first=True,
+                                                   padding_value=1)
+
         activations = activations.reshape(-1, activations.shape[2])
         logits = self.fc(activations)
         return F.log_softmax(logits, dim=1)
+
+
+def loss_fn(outputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    """Custom loss function that ignores PAD tokens when computing the loss.
+
+    Args:
+        outputs (torch.Tensor): log_softmax from the net.
+        labels (torch.Tensor): Ground truth labels, where -1 corresponds to a padded token.
+
+    Returns:
+        torch.Tensor: Scalar loss value.
+    """
+    labels = labels.reshape(-1)  # convert to vector
+    mask = (labels >= 0).float()  # 1 if greater than 0, 0 if -1
+    # bring the -1's into a valid index range
+    labels = labels % outputs.shape[1]
+    num_tokens = mask.sum()  # sum the actual number of tokens
+    # extract the value at the ground truth index
+    log_probs = outputs[range(outputs.shape[0]), labels]
+    # mask padded tokens from the sum
+    total_loss = -torch.sum(log_probs * mask)
+    loss = total_loss / num_tokens  # average the loss
+    return loss
+
+
+def get_predictions(output: torch.Tensor,
+                    lengths: list,
+                    concatenate: bool = True) -> list:
+    """Utility function to remove the padded tokens and retrieve the predicted index.
+
+    Args:
+        output (torch.Tensor): log_softmax from the net.
+        lengths (list): Lengths of original sequences in terms of tokens.
+        concatenate (bool, optional): If True, concatenate into one tensor, else return list of lists. Defaults to True.
+
+    Returns:
+        list: List of lists of predicted indices.
+    """
+    # extract predictions
+    max_len = max(lengths)
+    preds = output.argmax(dim=1)
+    i = 0
+    preds_list = []
+    for length in lengths:
+        start = i * max_len
+        stop = start + length
+        preds_list.append(preds[start:stop])
+        i += 1
+    if concatenate:
+        return torch.cat(preds_list)
+    return preds_list
+
+
+def recover_labels(padded_labels: torch.Tensor, lengths: list) -> torch.Tensor:
+    """Utility function to remove the padded labels and retrieve the ground truth labels.
+
+    Args:
+        padded_labels (torch.Tensor): Vector of labels including -1's.
+        lengths (list): Lengths of original sequences in terms of tokens.
+
+    Returns:
+        torch.Tensor: Unpadded sequence of labels.
+    """
+    # extract labels
+    max_len = max(lengths)
+    labels_vector = padded_labels.reshape(-1)
+    i = 0
+    labels_list = []
+    for length in lengths:
+        start = i * max_len
+        stop = start + length
+        labels_list.append(labels_vector[start:stop])
+        i += 1
+    return torch.cat(labels_list)
+
+
+def translate_predictions(batch: list, label_dict: dict) -> list:
+    """Iterate over list of lists of predicted indices and convert them to string labels.
+
+    Args:
+        batch (list): List of lists of predicted indices.
+        label_dict (dict): Index to string dictionary.
+
+    Returns:
+        list: List of lists of string labels.
+    """
+    preds = []
+    for pred_sequence in batch:
+        pred_list = []
+        for pred in pred_sequence.tolist():
+            pred_list.append(label_dict[pred])
+        preds.append(pred_list)
+    return preds
 
 
 def main(args):
