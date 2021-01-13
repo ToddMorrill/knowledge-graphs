@@ -18,6 +18,10 @@ python parse.py \
 # this is the approach detailed in the CoNLL-2003 paper
 python baseline.py \
     --data-directory /Users/tmorrill002/Documents/datasets/conll/transformed
+
+# run a vanilla LSTM and evaluate the results
+python train.py \
+    --config configs/baseline.yaml
 ```
 
 #### Virtual environment setup
