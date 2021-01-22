@@ -38,6 +38,8 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import classification_report
 
+import kg.ner.utils as utils
+
 
 def create_train_dict(df: pd.DataFrame, lowercase: bool = False) -> dict:
     """Create dictionary containing entities and their tags from the training set.
@@ -254,10 +256,7 @@ def main(args):
     file_names = ['train.csv', 'validation.csv', 'test.csv']
 
     # load data
-    df_dict = {}
-    for file_name in file_names:
-        file_path = os.path.join(args.data_directory, file_name)
-        df_dict[file_name] = pd.read_csv(file_path)
+    df_dict = utils.load_train_data(args.data_directory)
 
     # optionally include validation set into the train_dict
     if args.use_validation:
