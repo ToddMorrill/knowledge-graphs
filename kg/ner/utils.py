@@ -1,6 +1,8 @@
 import os
 
 import nltk
+nltk.download('punkt')  # word tokenizer
+nltk.download('averaged_perceptron_tagger')  # pos tagger
 import pandas as pd
 
 
