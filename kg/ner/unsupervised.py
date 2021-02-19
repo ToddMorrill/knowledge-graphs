@@ -31,6 +31,7 @@ import string
 import nltk
 from nltk.corpus.reader.rte import norm
 from numpy.lib.function_base import vectorize
+from numpy.lib.ufunclike import fix
 nltk.download('conll2000')  # noun phrase evaluation
 nltk.download('stopwords')  # stopwords
 from nltk.corpus import conll2000
@@ -44,7 +45,7 @@ class NounPhraseDetection(nltk.RegexpParser):
     def __init__(self, grammar=r'NP: {<[CDJNP].*>+}'):
         super().__init__(grammar)
 
-    def extract(self, text, preprocess=True):
+    def extract(self, text, preprocess=True, single_word_proper_nouns=True):
         # exclude candidates that are stop words or entirely punctuation
         punct = set(string.punctuation)
         stop_words = set(nltk.corpus.stopwords.words('english'))
@@ -57,25 +58,57 @@ class NounPhraseDetection(nltk.RegexpParser):
 
         # extract
         noun_phrases = []
+        all_phrases = []
         for sentence in preprocessed_sentences:
             tree = self.parse(sentence)
-            for subtree in tree.subtrees(filter=lambda t: t.label() == 'NP'):
-                temp_phrase = subtree.leaves()
-                noun_phrase_text = ' '.join(
-                    [token for token, pos in temp_phrase])
-                noun_phrases.append(noun_phrase_text)
+            # tree.subtrees(filter=lambda t: t.label() == 'NP')
+            i = 0
+            while i < len(tree):
+                if isinstance(tree[i], nltk.Tree) and tree[i].label() == 'NP':
+                    temp_phrase = tree[i].leaves()
+                    # phrase is only one word and not a proper noun, exclude it
+                    not_proper_noun = single_word_proper_nouns and (
+                        len(temp_phrase) == 1) and (temp_phrase[0][1] != 'NNP')
+                    if not_proper_noun:
+                        all_phrases.append((temp_phrase[0][0], False))
+                        i += 1
+                        continue
+                    noun_phrase_text = ' '.join(
+                        [token for token, pos in temp_phrase])
+                    noun_phrases.append(noun_phrase_text)
+                    all_phrases.append((noun_phrase_text, True))
+                    i += 1
+                else:
+                    temp_phrase = []
+                    while not isinstance(tree[i], nltk.Tree):
+                        temp_phrase.append(tree[i])
+                        i += 1
+                        if i == len(tree):
+                            break
+                    phrase_text = ' '.join(
+                        [token for token, pos in temp_phrase])
+                    all_phrases.append((phrase_text, False))
 
-        # remove stop words
-        noun_phrases = [
-            phrase for phrase in noun_phrases if phrase not in stop_words
-        ]
+        # unflag stop words
+        stop_words_removed = []
+        for phrase in all_phrases:
+            # if noun phrase == True and is a stop word
+            if phrase[1] and (phrase[0] in stop_words):
+                stop_words_removed.append((phrase[0], False))
+            else:
+                stop_words_removed.append(phrase)
 
-        # remove punction (maybe)
-        noun_phrases = [
-            phrase for phrase in noun_phrases
-            if phrase is not all(char in punct for char in phrase)
-        ]
-        return noun_phrases
+        # unflag punction
+        final_phrases = []
+        for phrase in stop_words_removed:
+            # if noun phrase == True and all punctuation
+            if phrase[1] and (phrase[0] is all(char in punct
+                                               for char in phrase)):
+                final_phrases.append((phrase[0], False))
+            else:
+                final_phrases.append(phrase)
+
+        return final_phrases
 
 
 class EntityDetection():
@@ -83,9 +116,10 @@ class EntityDetection():
     def __init__(self, parser) -> None:
         self.parser = parser
 
-    def candidates(self, text, preprocess=True):
-        noun_phrases = self.parser.extract(text, preprocess=preprocess)
-        return noun_phrases
+    def candidates(self, text, preprocess=True, single_word_proper_nouns=True):
+        tagged_phrases = self.parser.extract(text, preprocess,
+                                             single_word_proper_nouns)
+        return tagged_phrases
 
     def fit_tfidf(self, documents, preprocess=True):
         # TODO: determine the best tokenizer/casing to use
@@ -99,7 +133,10 @@ class EntityDetection():
         self.vectorizer = TfidfVectorizer(norm=None)
         self.vectorizer.fit(documents)
 
-    def score_phrases(self, phrases):
+    def score_phrases(self, phrases, noun_phrase_flags=True):
+        if noun_phrase_flags:
+            phrases, flags = zip(*phrases)
+
         tfidf_vectors = self.vectorizer.transform(phrases)
 
         # average non-zero entries
@@ -107,9 +144,18 @@ class EntityDetection():
         sums = np.squeeze(np.asarray(tfidf_vectors.sum(axis=1)))
 
         # row-wise counts of non-zero entries (from CSR matrix)
-        non_zero_counts = np.diff(tfidf_vectors.indptr)
+        # non_zero_counts = np.diff(tfidf_vectors.indptr)
 
-        return sums / non_zero_counts
+        # TODO: find a better way to compute this, accounting for the vocab that vectorizer uses
+        token_counts = self.vectorizer._count_vocab(
+            raw_documents=phrases, fixed_vocab=False)[1].toarray()
+        token_counts = np.squeeze(np.asarray(token_counts.sum(axis=1)))
+
+        scores = sums / token_counts
+
+        if noun_phrase_flags:
+            return list(zip(phrases, flags, scores))
+        return list(zip(phrases, scores))
 
 
 class EntityTypeDetection():
@@ -119,16 +165,15 @@ class EntityTypeDetection():
 
 def main(args):
     df_dict = utils.load_train_data(args.data_directory)
-    # noun_phrase_patterns = [
-    #     '(<DT|PRP\$|RBR>?<JJ.*>*<NN.*>+)', '(<CD><NN><TO><CD><NN>)',
-    #     '(<JJR>?<IN>?<CD>?<NN>+)', '(<POS><NN>)'
-    # ]
-    # grammar = f'NP:  {{{"|".join(noun_phrase_patterns)}}}'
-    grammar = r'NP: {<[CDJNP].*>+}'
-    chunk_parser = NounPhraseDetection(grammar)
+    train_df = df_dict['train.csv']
+    # gather up articles
+    articles = train_df.groupby(['Article_ID'], )['Token'].apply(
+        lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
+
+    chunk_parser = NounPhraseDetection()
 
     sample = 'Here is some sample text. And some more!'
-    noun_phrases = chunk_parser.extract(sample)
+    noun_phrases = chunk_parser.extract(articles[0])
     print(noun_phrases)
 
     corpus = [
@@ -140,6 +185,12 @@ def main(args):
     entity_extractor.fit_tfidf(corpus + [sample])
     temp = entity_extractor.vectorizer.transform(
         ['another document', 'second document'])
+    sample_phrases = [
+        'document, document, document', 'This document, document in',
+        'Washington'
+    ]
+    results = entity_extractor.score_phrases(noun_phrases)
+    breakpoint()
 
     # print(entity_candidates)
 
