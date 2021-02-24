@@ -9,3 +9,4 @@ scikit-learn
 torch
 pyyaml
 nltk
+networkx

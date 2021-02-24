@@ -26,17 +26,20 @@ Examples:
 """
 
 import argparse
+from collections import Counter
+import itertools
+
 import string
 
+import networkx
 import nltk
-from nltk.corpus.reader.rte import norm
-from numpy.lib.function_base import vectorize
-from numpy.lib.ufunclike import fix
+from nltk import chunk
+from numpy.core.fromnumeric import var
 nltk.download('conll2000')  # noun phrase evaluation
 nltk.download('stopwords')  # stopwords
 from nltk.corpus import conll2000
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 
 import kg.ner.utils as utils
 
@@ -111,7 +114,7 @@ class NounPhraseDetection(nltk.RegexpParser):
         return final_phrases
 
 
-class EntityDetection():
+class EntityScore(object):
     # implement TF-IDF/TextRank filters
     def __init__(self, parser) -> None:
         self.parser = parser
@@ -121,7 +124,19 @@ class EntityDetection():
                                              single_word_proper_nouns)
         return tagged_phrases
 
-    def fit_tfidf(self, documents, preprocess=True):
+    def fit(self, documents, preprocess=True):
+        raise NotImplementedError
+
+    def score_phrases(self, phrases, noun_phrase_flags=True):
+        raise NotImplementedError
+
+
+class TFIDFScore(EntityScore):
+    # implement TF-IDF/TextRank filters
+    def __init__(self, parser) -> None:
+        super().__init__(parser)
+
+    def fit(self, documents, preprocess=True):
         # TODO: determine the best tokenizer/casing to use
         # # extract noun phrases from documents
         # phrases = []
@@ -132,6 +147,77 @@ class EntityDetection():
         # fit global idf scores
         self.vectorizer = TfidfVectorizer(norm=None)
         self.vectorizer.fit(documents)
+
+    def score_phrases(self, phrases, noun_phrase_flags=True):
+        if noun_phrase_flags:
+            phrases, flags = zip(*phrases)
+
+        tfidf_vectors = self.vectorizer.transform(phrases)
+
+        # average non-zero entries
+        # row sums
+        sums = np.squeeze(np.asarray(tfidf_vectors.sum(axis=1)))
+
+        # row-wise counts of non-zero entries (from CSR matrix)
+        # non_zero_counts = np.diff(tfidf_vectors.indptr)
+
+        # TODO: find a better way to compute this, accounting for the vocab that vectorizer uses
+        token_counts = self.vectorizer._count_vocab(
+            raw_documents=phrases, fixed_vocab=False)[1].toarray()
+        token_counts = np.squeeze(np.asarray(token_counts.sum(axis=1)))
+
+        scores = sums / token_counts
+
+        if noun_phrase_flags:
+            return list(zip(phrases, flags, scores))
+        return list(zip(phrases, scores))
+
+class TextRankScore(EntityScore):
+    # implement TF-IDF/TextRank filters
+    def __init__(self, parser) -> None:
+        super().__init__(parser)
+
+    def create_nodes_edges(self, documents, preprocess=True):
+        pass
+
+    def create_graph(self):
+        pass
+
+    def fit(self, documents, preprocess=True):
+        words = set()
+        bigrams = []
+        for doc in documents:
+            if preprocess:
+                doc = utils.preprocess(doc)
+            for sentence in doc:
+                # retrieve just the tokens
+                token_list = list(zip(*sentence))[0]
+                words.update(set(token_list))
+                for pair in nltk.bigrams(token_list):
+                    bigrams.append(pair)
+
+        # fix the order
+        words = sorted(list(words))
+
+        # Sort the combinations so that A,B and B,A are treated the same
+        bigrams = [tuple(sorted(d)) for d in bigrams]
+
+        # count the combinations
+        counts = Counter(bigrams)
+
+
+        # Create the table
+        table = np.zeros((len(words),len(words)))
+
+        for i, v1 in enumerate(words):
+            for j, v2 in enumerate(words[i:]):        
+                j = j + i 
+                table[i, j] = counts[v1, v2]
+                table[j, i] = counts[v1, v2]
+
+        # Display the output
+        print(table)
+        breakpoint()
 
     def score_phrases(self, phrases, noun_phrase_flags=True):
         if noun_phrase_flags:
@@ -180,16 +266,18 @@ def main(args):
         'This is the first document.', 'This document is the second document.',
         'And this is the third one.', 'Is this the first document?'
     ]
-    entity_extractor = EntityDetection(chunk_parser)
-    # entity_candidates = entity_extractor.candidates(sample)
-    entity_extractor.fit_tfidf(corpus + [sample])
-    temp = entity_extractor.vectorizer.transform(
-        ['another document', 'second document'])
-    sample_phrases = [
-        'document, document, document', 'This document, document in',
-        'Washington'
-    ]
-    results = entity_extractor.score_phrases(noun_phrases)
+    # entity_extractor = TFIDFScore(chunk_parser)
+    # # entity_candidates = entity_extractor.candidates(sample)
+    # entity_extractor.fit_tfidf(corpus + [sample])
+    # temp = entity_extractor.vectorizer.transform(
+    #     ['another document', 'second document'])
+    # sample_phrases = [
+    #     'document, document, document', 'This document, document in',
+    #     'Washington'
+    # ]
+    # results = entity_extractor.score_phrases(noun_phrases)
+    scorer = TextRankScore(chunk_parser)
+    scorer.fit(corpus)
     breakpoint()
 
     # print(entity_candidates)
