@@ -45,7 +45,7 @@ def preprocess(document):
     return sentences
 
 
-def extract_noun_chunks(document, parser, print_tree=False):
+def parse_document(document, parser, print_tree=False):
     preprocessed_sentences = preprocess(document)
     results = []
     for sentence in preprocessed_sentences:

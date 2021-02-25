@@ -27,16 +27,11 @@ Examples:
 
 import argparse
 from collections import Counter
-import itertools
 import math
-
 import string
-from typing import final
 
 import networkx
 import nltk
-from nltk import chunk
-from numpy.core.fromnumeric import var
 nltk.download('conll2000')  # noun phrase evaluation
 nltk.download('stopwords')  # stopwords
 from nltk.corpus import conll2000
@@ -47,14 +42,40 @@ from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 import kg.ner.utils as utils
 
 
-class NounPhraseDetection(nltk.RegexpParser):
-    def __init__(self, grammar=r'NP: {<[CDJNP].*>+}'):
+class NounPhraseDetector(nltk.RegexpParser):
+    """A class that detects noun phrase chunks in text documents.
+    
+    This class inherits from nltk.RegexpParser and in particular, makes use of
+    the parse() and evaluate() methods.
+    """
+    def __init__(self, grammar: str = r'NP: {<[CDJNP].*>+}') -> None:
+        """Initialize the parser by specifying an NLTK-style grammar.
+
+        Args:
+            grammar (str, optional): NLTK-style grammar specification. Defaults to r'NP: {<[CDJNP].*>+}'.
+        """
         super().__init__(grammar)
 
     def extract(self,
-                document,
-                preprocess=True,
-                single_word_proper_nouns=True):
+                document: str,
+                preprocess: bool = True,
+                single_word_proper_nouns: bool = True) -> list:
+        """Extract noun phrases from the passed text document. This method 
+        returns the entire document, with noun phrases marked True and all other 
+        parts of speech marked False. Stopwords and punctuation are marked 
+        False.
+
+        Args:
+            document (str): Text document from noun phrases are extracted.
+            preprocess (bool, optional): Tokenize and assign POS tags. Defaults 
+                to True.
+            single_word_proper_nouns (bool, optional): If True, assign False to 
+                single noun phrase tokens that are not proper nouns. Defaults to 
+                True.
+
+        Returns:
+            list: Tuples of ('text phrase', True/False) from the document.
+        """
         # exclude candidates that are stop words or entirely punctuation
         punct = set(string.punctuation)
         stop_words = set(nltk.corpus.stopwords.words('english'))
@@ -120,58 +141,93 @@ class NounPhraseDetection(nltk.RegexpParser):
         return final_phrases
 
 
-class EntityScore(object):
-    # implement TF-IDF/TextRank filters
-    def __init__(self, parser) -> None:
+class EntityScorer(object):
+    """An abstract base class that scores the likelihood of a phrase being an
+    entity.
+    """
+    def __init__(self, parser: NounPhraseDetector) -> None:
+        """Initialize the class with a NounPhraseDetector that can extract 
+        phrases.
+
+        Args:
+            parser (NounPhraseDetector): A noun phrase detector that implements
+                the extract() method.
+        """
         self.parser = parser
 
     def candidates(self,
-                   document,
-                   preprocess=True,
-                   single_word_proper_nouns=True):
+                   document: str,
+                   preprocess: bool = True,
+                   single_word_proper_nouns: bool = True) -> list:
+        """Extract a list of entity candidates from the pass document.
+
+        Args:
+            document (str): Text document from noun phrases are extracted.
+            preprocess (bool, optional): Tokenize and assign POS tags. Defaults 
+                to True.
+            single_word_proper_nouns (bool, optional): If True, assign False to 
+                single noun phrase tokens that are not proper nouns. Defaults to 
+                True.
+
+        Returns:
+            list: Tuples of ('text phrase', True/False) from the document.
+        """
         tagged_phrases = self.parser.extract(document, preprocess,
                                              single_word_proper_nouns)
 
         return tagged_phrases
 
-    def candidates_documents(self,
-                             documents,
-                             preprocess=True,
-                             single_word_proper_nouns=True):
-        tagged_phrases = []
-        for document in documents:
-            phrases = self.candidates(document, preprocess,
-                                      single_word_proper_nouns)
-            for phrase in phrases:
-                tagged_phrases.append(phrase)
-
-        return tagged_phrases
-
-    def fit(self, documents, preprocess=True):
+    def fit(self):
         raise NotImplementedError
 
-    def score_phrases(self, phrases, noun_phrase_flags=True):
+    def score_phrases(self):
         raise NotImplementedError
 
 
-class TFIDFScore(EntityScore):
-    # implement TF-IDF/TextRank filters
-    def __init__(self, parser) -> None:
+class TFIDFScorer(EntityScorer):
+    """A class that computes the TF-IDF matrix for a text corpus and scores 
+    assigns a TF-IDF score to phrases.
+
+    This class inherits from EntityScorer, which implements the candidates() 
+    method.
+    """
+    def __init__(self, parser: NounPhraseDetector) -> None:
+        """Initialize the class with a NounPhraseDetector that can extract 
+        phrases.
+
+        Args:
+            parser (NounPhraseDetector): A noun phrase detector that implements
+                the extract() method.
+        """
         super().__init__(parser)
 
-    def fit(self, documents, preprocess=True):
-        # TODO: determine the best tokenizer/casing to use
-        # # extract noun phrases from documents
-        # phrases = []
-        # for doc in documents:
-        #     for candidate in self.candidates(doc, preprocess=preprocess):
-        #         phrases.append(candidate)
+    def fit(self, documents: list) -> None:
+        """Fit a TF-IDF model using the documents provided.
 
+        Args:
+            documents (list): List of text documents.
+        """
+        # TODO: determine the best tokenizer/casing to use
         # fit global idf scores
+        # not using any normalization here because single tokens will be
+        # assigned a score of 1 (highest score possible under l2 norm)
         self.vectorizer = TfidfVectorizer(norm=None)
         self.vectorizer.fit(documents)
 
-    def score_phrases(self, phrases, noun_phrase_flags=True):
+    def score_phrases(self,
+                      phrases: list,
+                      noun_phrase_flags: bool = True) -> list:
+        """Assign a TF-IDF score to all the phrases passed.
+
+        Args:
+            phrases (list): List of phrases to assign a score to.
+            noun_phrase_flags (bool, optional): If True, phrases should be a 
+                list of tuples of (phrase, True/False) indicating if the phrase 
+                is a noun phrase or not. Defaults to True.
+
+        Returns:
+            list: Tuples of (phrase, flags, scores).
+        """
         if noun_phrase_flags:
             phrases, flags = zip(*phrases)
 
@@ -184,7 +240,8 @@ class TFIDFScore(EntityScore):
         # row-wise counts of non-zero entries (from CSR matrix)
         # non_zero_counts = np.diff(tfidf_vectors.indptr)
 
-        # TODO: find a better way to compute this, accounting for the vocab that vectorizer uses
+        # TODO: find a better way to compute this, accounting for the vocab that
+        #  vectorizer uses
         token_counts = self.vectorizer._count_vocab(
             raw_documents=phrases, fixed_vocab=False)[1].toarray()
         token_counts = np.squeeze(np.asarray(token_counts.sum(axis=1)))
@@ -196,14 +253,23 @@ class TFIDFScore(EntityScore):
         return list(zip(phrases, scores))
 
 
-class TextRankScore(EntityScore):
-    # adjectives, nouns, verbs
+class TextRankScorer(EntityScorer):
+    """A class that computes the TextRank score for tokens found in a passed
+    document and assigns a TextRank score to phrases.
+
+    This class inherits from EntityScorer, which implements the candidates() 
+    method.
+
+    This class is still a work-in-progress. Many thanks to pytextrank for their
+    reference implementation. https://github.com/DerwenAI/pytextrank/blob/master/pytextrank/base.py
+    """
     def __init__(self,
                  document,
                  preprocess,
                  parser,
                  included_pos=['JJ', 'NN', 'VB'],
                  window_size=2) -> None:
+        """Initialize the class on a text document."""
         super().__init__(parser)
         if preprocess:
             self.document = utils.preprocess(document)
@@ -213,6 +279,7 @@ class TextRankScore(EntityScore):
         self.window_size = window_size
 
     def _keep_token(self, token_pos):
+        """Determine if the token will be kept """
         token, pos = token_pos
         for included in self.included_pos:
             if pos.startswith(included):
@@ -262,8 +329,10 @@ class TextRankScore(EntityScore):
         self.token_scores = networkx.pagerank(self.graph)
 
     def _normalized_score(self, phrase, score):
-        not_included = len([token for token, pos in phrase if self._keep_token((token, pos))])
-        not_included_discount = len(phrase) / (len(phrase) + (2.0 * not_included) + 1.0)
+        not_included = len(
+            [token for token, pos in phrase if self._keep_token((token, pos))])
+        not_included_discount = len(phrase) / (len(phrase) +
+                                               (2.0 * not_included) + 1.0)
 
         # use a root mean square (RMS) to normalize the contributions
         # of all the tokens
@@ -271,15 +340,14 @@ class TextRankScore(EntityScore):
 
         return interim_score * not_included_discount
 
-
     def score_phrases(self,
                       phrases,
                       noun_phrase_flags=True,
                       preprocess=True,
-                    normalize_score=True):
+                      normalize_score=True):
         if noun_phrase_flags:
             phrases, flags = zip(*phrases)
-        
+
         # TODO: address the tokenization isusue
         phrases = [phrase.split() for phrase in phrases]
         phrases = utils.tag_pos(phrases)
@@ -305,17 +373,18 @@ class TextRankScore(EntityScore):
                 else:
                     score = scores[idx]
                 noun_phrase_scores.append(score)
-        
+
         final_ranks = []
         for idx, phrase in enumerate(phrases):
             # prepare complete phrase
             phrase = ' '.join([token for token, pos in phrase])
             if flags[idx]:
-                percentile_rank = stats.percentileofscore(noun_phrase_scores, scores[idx])
-                final_ranks.append((phrase, flags[idx], percentile_rank/100))
+                percentile_rank = stats.percentileofscore(
+                    noun_phrase_scores, scores[idx])
+                final_ranks.append((phrase, flags[idx], percentile_rank / 100))
             else:
                 # assign a score of 0.0 to non-noun phrases
-                final_ranks.append((phrase, flags[idx], 0.0))                
+                final_ranks.append((phrase, flags[idx], 0.0))
 
         return final_ranks
 
@@ -332,7 +401,7 @@ def main(args):
     articles = train_df.groupby(['Article_ID'], )['Token'].apply(
         lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
 
-    chunk_parser = NounPhraseDetection()
+    chunk_parser = NounPhraseDetector()
 
     # sample = 'Here is some sample text. And some more!'
     # noun_phrases = chunk_parser.extract(articles[0])

@@ -1,19 +1,31 @@
 import pytest
 import nltk
 
-from kg.ner.utils import extract_noun_chunks
-from kg.ner.unsupervised import NounPhraseDetection
+from kg.ner.utils import parse_document
+from kg.ner.unsupervised import NounPhraseDetector
 
-from conftest import test_sentences, test_sentence_solutions
+from conftest import test_documents, test_parse_documents, test_extracts
 
 
 @pytest.fixture(scope='module')
 def chunk_parser():
-    return NounPhraseDetection()
+    return NounPhraseDetector()
 
 
 @pytest.mark.parametrize("test_input,expected",
-                         zip(test_sentences(), test_sentence_solutions()))
-def test_sentence(test_input, expected, chunk_parser):
-    results = extract_noun_chunks(test_input, chunk_parser, print_tree=False)
+                         zip(test_documents(), test_parse_documents()))
+def test_parse_document(test_input, expected, chunk_parser):
+    results = parse_document(test_input, chunk_parser, print_tree=False)
     assert results == expected
+
+@pytest.mark.parametrize("test_input,expected",
+                         zip(test_documents(), test_extracts()))
+def test_extract(test_input, expected, chunk_parser):
+    result = chunk_parser.extract(test_input)
+    assert result == expected
+
+
+# docs = test_documents()
+# chunk_parser = NounPhraseDetection()
+# result = chunk_parser.extract(docs[0])
+# breakpoint()
