@@ -28,6 +28,7 @@ Examples:
 import argparse
 from collections import Counter
 import itertools
+import math
 
 import string
 from typing import final
@@ -260,17 +261,27 @@ class TextRankScore(EntityScore):
         # get scores for words
         self.token_scores = networkx.pagerank(self.graph)
 
+    def _normalized_score(self, phrase, score):
+        not_included = len([token for token, pos in phrase if self._keep_token((token, pos))])
+        not_included_discount = len(phrase) / (len(phrase) + (2.0 * not_included) + 1.0)
+
+        # use a root mean square (RMS) to normalize the contributions
+        # of all the tokens
+        interim_score = math.sqrt(score / (len(phrase) + not_included))
+
+        return interim_score * not_included_discount
+
+
     def score_phrases(self,
                       phrases,
                       noun_phrase_flags=True,
-                      preprocess=True):
+                      preprocess=True,
+                    normalize_score=True):
         if noun_phrase_flags:
             phrases, flags = zip(*phrases)
         
-        # NB: should really be returning pos tags from self.candidates
-        # possible to introduce pos errors when working on these fragments
-        # get pos tags
-        phrases = utils.tokenize_sentences(phrases)
+        # TODO: address the tokenization isusue
+        phrases = [phrase.split() for phrase in phrases]
         phrases = utils.tag_pos(phrases)
 
         scores = []
@@ -289,10 +300,16 @@ class TextRankScore(EntityScore):
         noun_phrase_scores = []
         for idx, phrase in enumerate(phrases):
             if flags[idx]:
-                noun_phrase_scores.append(scores[idx])
+                if normalize_score:
+                    score = self._normalized_score(phrase, scores[idx])
+                else:
+                    score = scores[idx]
+                noun_phrase_scores.append(score)
         
         final_ranks = []
         for idx, phrase in enumerate(phrases):
+            # prepare complete phrase
+            phrase = ' '.join([token for token, pos in phrase])
             if flags[idx]:
                 percentile_rank = stats.percentileofscore(noun_phrase_scores, scores[idx])
                 final_ranks.append((phrase, flags[idx], percentile_rank/100))
