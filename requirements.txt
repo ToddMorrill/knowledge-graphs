@@ -11,3 +11,4 @@ pyyaml
 nltk
 networkx
 matplotlib
+sentence-transformers

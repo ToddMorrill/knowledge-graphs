@@ -36,10 +36,13 @@ nltk.download('conll2000')  # noun phrase evaluation
 nltk.download('stopwords')  # stopwords
 from nltk.corpus import conll2000
 import numpy as np
+import pandas as pd
 from scipy import stats
-from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
+from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 import kg.ner.utils as utils
+from kg.ner.cluster import Cluster
 
 
 class NounPhraseDetector(nltk.RegexpParser):
@@ -389,9 +392,32 @@ class TextRankScorer(EntityScorer):
         return final_ranks
 
 
-class EntityTypeDetection():
-    # implement type detection (cluster based?)
-    pass
+class EntityTypeDetector():
+    """Cluster based entity type detection"""
+    def __init__(self):
+        self.vectorizer = SentenceTransformer(
+            'paraphrase-distilroberta-base-v1')
+
+    def fit(self,
+            documents,
+            k_max=80,
+            k_step=4,
+            var_explained=50,
+            directory='results'):
+        self.documents = documents
+        phrase_embeddings = self.vectorizer.encode(documents)
+        self.cluster = Cluster(phrase_embeddings)
+        self.cluster.find_k_fit(k_max, k_step, var_explained)
+        self.cluster.plot_elbows(directory)
+
+    def sample_clusters(self):
+        df = pd.DataFrame(zip(self.documents, self.cluster.model.labels_),
+                          columns=['Phrase', 'Label'])
+        for clus in range(self.cluster.k):
+            print("Cluster: {}".format(clus))
+            sample_size = min(len(df[df['Label'] == clus]), 10)
+            print(df[df['Label'] == clus]['Phrase'].sample(
+                sample_size).values.tolist())
 
 
 def main(args):
@@ -403,10 +429,33 @@ def main(args):
 
     chunk_parser = NounPhraseDetector()
 
-    # sample = 'Here is some sample text. And some more!'
-    # noun_phrases = chunk_parser.extract(articles[0])
-    # print(noun_phrases)
+    noun_phrases = []
+    for article in articles:
+        noun_phrases += chunk_parser.extract(article)
 
+    # type_detector = EntityTypeDetector()
+    # type_detector.fit(cluster_phrases, k_max=10, k_step=1, var_explained=20)
+    # type_detector.cluster.k
+    # type_detector.cluster.model.labels_
+    cluster_phrases = [phrase for phrase, flag in noun_phrases if flag]
+    vectorizer = SentenceTransformer('paraphrase-distilroberta-base-v1')
+    phrase_embeddings = vectorizer.encode(cluster_phrases)
+    cluster = Cluster(phrase_embeddings)
+    # cluster.fit(10)
+    cluster.find_k_fit(k_max=80)
+    cluster.plot_elbows()
+
+    import pandas as pd
+    df = pd.DataFrame(zip(cluster_phrases, cluster.model.labels_),
+                      columns=['Phrase', 'Label'])
+    for clus in range(cluster.k):
+        print("Cluster: {}".format(clus))
+        sample_size = min(len(df[df['Label'] == clus]), 10)
+        print(df[df['Label'] == clus]['Phrase'].sample(
+            sample_size).values.tolist())
+        #print("\n")
+    breakpoint()
+    # sample = 'Here is some sample text. And some more!'
     # corpus = [
     #     'This is the first document.', 'This document is the second document.',
     #     'And this is the third one.', 'Is this the first document?'
@@ -421,11 +470,11 @@ def main(args):
     #     'Washington'
     # ]
     # results = entity_extractor.score_phrases(noun_phrases)
-    scorer = TextRankScore(articles[0], preprocess=True, parser=chunk_parser)
-    scorer.fit()
-    candidates = scorer.candidates(articles[0])
-    scores = scorer.score_phrases(candidates)
-    breakpoint()
+    # scorer = TextRankScorer(articles[0], preprocess=True, parser=chunk_parser)
+    # scorer.fit()
+    # candidates = scorer.candidates(articles[0])
+    # scores = scorer.score_phrases(candidates)
+    # breakpoint()
 
     # candidates = scorer.candidates_documents(corpus)
     # candidates = scorer.candidates(corpus[0])

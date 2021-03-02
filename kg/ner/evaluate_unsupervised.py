@@ -5,6 +5,7 @@ Examples:
         --data-directory /Users/tmorrill002/Documents/datasets/conll/transformed
 """
 import argparse
+import os
 
 import matplotlib.pyplot as plt
 import nltk
@@ -207,12 +208,14 @@ def evaluate_textrank_entity_detection(documents, df):
     return results
 
 
-def plot_precision_recall(results):
+def plot_precision_recall(results, scoring_method='TFIDF'):
     results_df = pd.DataFrame(
         results[1], columns=['Threshold', 'Macro-F1', 'Precision', 'Recall'])
     results_df.index = results_df['Threshold']
     results_df.drop(columns=['Threshold']).plot()
-    plt.show()
+    os.makedirs('results', exist_ok=True)
+    plt.savefig(f'results/{scoring_method}_precision_recall_f1.png',
+                bbox_inches='tight')
 
 
 def main(args):
@@ -232,11 +235,11 @@ def main(args):
 
     # evaluate TFIDF scoring method
     tfidf_results = evaluate_tfidf_entity_detection(articles, train_df)
-    plot_precision_recall(tfidf_results)
+    plot_precision_recall(tfidf_results, scoring_method='TFIDF')
 
     # evaluate TextRank scoring method
     textrank_results = evaluate_textrank_entity_detection(articles, train_df)
-    plot_precision_recall(textrank_results)
+    plot_precision_recall(textrank_results, scoring_method='TextRank')
 
 
 if __name__ == '__main__':
