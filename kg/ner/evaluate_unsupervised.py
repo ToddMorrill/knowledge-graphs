@@ -6,6 +6,7 @@ Examples:
 """
 import argparse
 import os
+import itertools
 
 import matplotlib.pyplot as plt
 import nltk
@@ -13,6 +14,7 @@ from nltk import text
 from nltk.corpus import conll2000
 import numpy as np
 import pandas as pd
+from sentence_transformers import SentenceTransformer, util
 from sklearn.metrics import accuracy_score, classification_report
 
 import kg.ner.utils as utils
@@ -81,8 +83,32 @@ def get_candidate_phrases(articles, entity_scorer):
         sentences = utils.tokenize_text(article)
         article = [sentence.split() for sentence in sentences]
         article = utils.tag_pos(article)
-        for candidate in entity_scorer.candidates(article, preprocess=False):
+        for candidate in entity_scorer.extract(article, preprocess=False):
             candidates.append(candidate)
+    return candidates
+
+
+def flag_nnp(article):
+    groupings = []
+    for sentence in article:
+        for key, group in itertools.groupby(sentence, key=lambda x: x[1]):
+            grouping = ' '.join([token for token, pos in list(group)])
+            if key == 'NNP':
+                groupings.append((grouping, True))
+            else:
+                groupings.append((grouping, False))
+    return groupings
+
+
+def get_nnp_candidate_phrases(articles):
+    # get candidate phrases
+    candidates = []
+    for article in articles:
+        # manually tokenize because nltk tokenizer is converting 'C$' -> ['C', '$'] and throwing off comparison
+        sentences = utils.tokenize_text(article)
+        article = [sentence.split() for sentence in sentences]
+        article = utils.tag_pos(article)
+        candidates += flag_nnp(article)
     return candidates
 
 
@@ -99,8 +125,18 @@ def prepare_scored_phrases(scored_candidates):
     df['Predicted_Phrase'] = df['Predicted_Phrase'].replace('``', '"')
     return df
 
+def prepare_nnp_phrases(candidates):
+    df = pd.DataFrame(
+        candidates,
+        columns=['Predicted_Phrase', 'NNP_Phrase_Flag'])
+    df['Phrase_ID'] = df.index
+    df['Predicted_Phrase'] = df['Predicted_Phrase'].apply(lambda x: x.split())
+    df = df.explode('Predicted_Phrase')
+    df['Predicted_Phrase'] = df['Predicted_Phrase'].replace('``', '"')
+    return df
 
-def merge_dfs(train_df, prediction_df):
+
+def merge_dfs(train_df, prediction_df, nnp=False):
     assert len(train_df) == len(prediction_df)
     eval_df = pd.concat((train_df, prediction_df.reset_index(drop=True)),
                         axis=1)
@@ -108,7 +144,10 @@ def merge_dfs(train_df, prediction_df):
     eval_df = eval_df.dropna(subset=['Token'])
     assert (
         eval_df['Token'] == eval_df['Predicted_Phrase']).sum() == len(eval_df)
-    eval_df['Predicted_Entity_Flag'] = eval_df['Noun_Phrase_Flag']
+    if nnp:
+        eval_df['Predicted_Entity_Flag'] = eval_df['NNP_Phrase_Flag']
+    else:
+        eval_df['Predicted_Entity_Flag'] = eval_df['Noun_Phrase_Flag']
     return eval_df
 
 
@@ -146,27 +185,28 @@ def optimize_threshold(eval_df, scoring_method='TFIDF', optimization_steps=32):
 
 
 def evaluate(eval_df, scoring_method='TFIDF', optimization_steps=64):
+    print()
     # baseline of just using noun phrases to identify entities (high recall, low precision)
-    print('Baseline using noun phrases to identify entities:')
+    print(f'{scoring_method} baseline using noun phrases to identify entities:')
     print(
         classification_report(eval_df['NER_Tag_Flag'],
                               eval_df['Predicted_Entity_Flag']))
     print()
 
-    # use score and a threshold
-    median_threshold = eval_df['Score'].describe()['50%']
-    eval_df[f'Predicted_Entity_Flag_{scoring_method}_Median'] = (
-        eval_df['Noun_Phrase_Flag'] & (eval_df['Score'] > median_threshold))
-    print(
-        f'Use the median {scoring_method} score ({round(median_threshold, 4)}) as a threshold to identify entities.'
-    )
-    print(
-        classification_report(
-            eval_df['NER_Tag_Flag'],
-            eval_df[f'Predicted_Entity_Flag_{scoring_method}_Median']))
-    print()
+    if optimization_steps:
+        # use score and a threshold
+        median_threshold = eval_df['Score'].describe()['50%']
+        eval_df[f'Predicted_Entity_Flag_{scoring_method}_Median'] = (
+            eval_df['Noun_Phrase_Flag'] & (eval_df['Score'] > median_threshold))
+        print(
+            f'Use the median {scoring_method} score ({round(median_threshold, 4)}) as a threshold to identify entities.'
+        )
+        print(
+            classification_report(
+                eval_df['NER_Tag_Flag'],
+                eval_df[f'Predicted_Entity_Flag_{scoring_method}_Median']))
 
-    return optimize_threshold(eval_df, scoring_method, optimization_steps)
+        return optimize_threshold(eval_df, scoring_method, optimization_steps)
 
 
 def evaluate_tfidf_entity_detection(documents, df):
@@ -195,7 +235,7 @@ def evaluate_textrank_entity_detection(documents, df):
         sentences = utils.tokenize_text(article)
         article = [sentence.split() for sentence in sentences]
         article = utils.tag_pos(article)
-        candidates = scorer.candidates(article, preprocess=False)
+        candidates = scorer.extract(article, preprocess=False)
 
         # score candidates
         for candidate in scorer.score_phrases(candidates):
@@ -205,6 +245,35 @@ def evaluate_textrank_entity_detection(documents, df):
     results = evaluate(eval_df,
                        scoring_method='TextRank',
                        optimization_steps=64)
+    return results
+
+
+def evaluate_cosine_entity_detection(documents, df):
+    chunk_parser = NounPhraseDetector()
+    candidates = get_candidate_phrases(documents, chunk_parser)
+    phrases, flags = zip(*candidates)
+
+    # consine distance between phrases and entity indicator
+    vectorizer = SentenceTransformer(
+        'paraphrase-distilroberta-base-v1')  # ('stsb-distilbert-base')
+    phrase_embeddings = vectorizer.encode(phrases, convert_to_tensor=True)
+    entity_indicator = vectorizer.encode(['this is not a named entity'],
+                                         convert_to_tensor=True)
+    scores = 1 - util.pytorch_cos_sim(phrase_embeddings, entity_indicator)
+    scores = np.squeeze(scores).numpy()
+
+    prediction_df = prepare_scored_phrases(zip(phrases, flags, scores))
+    eval_df = merge_dfs(df, prediction_df)
+    results = evaluate(eval_df, scoring_method='Cosine', optimization_steps=64)
+    return results
+
+
+def evaluate_nnp_entity_detection(documents, df):
+    chunk_parser = NounPhraseDetector()
+    candidates = get_nnp_candidate_phrases(documents)
+    prediction_df = prepare_nnp_phrases(candidates)
+    eval_df = merge_dfs(df, prediction_df, nnp=True)
+    results = evaluate(eval_df, scoring_method='NNP', optimization_steps=None)
     return results
 
 
@@ -233,6 +302,9 @@ def main(args):
     articles = train_df.groupby(['Article_ID'], )['Token'].apply(
         lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
 
+    # evaluate NNP prediction method
+    evaluate_nnp_entity_detection(articles, train_df)
+
     # evaluate TFIDF scoring method
     tfidf_results = evaluate_tfidf_entity_detection(articles, train_df)
     plot_precision_recall(tfidf_results, scoring_method='TFIDF')
@@ -240,6 +312,10 @@ def main(args):
     # evaluate TextRank scoring method
     textrank_results = evaluate_textrank_entity_detection(articles, train_df)
     plot_precision_recall(textrank_results, scoring_method='TextRank')
+
+    # evaluate cosine scoring method
+    cosine_results = evaluate_cosine_entity_detection(articles, train_df)
+    plot_precision_recall(cosine_results, scoring_method='Cosine')
 
 
 if __name__ == '__main__':

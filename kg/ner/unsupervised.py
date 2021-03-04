@@ -158,7 +158,7 @@ class EntityScorer(object):
         """
         self.parser = parser
 
-    def candidates(self,
+    def extract(self,
                    document: str,
                    preprocess: bool = True,
                    single_word_proper_nouns: bool = True) -> list:
