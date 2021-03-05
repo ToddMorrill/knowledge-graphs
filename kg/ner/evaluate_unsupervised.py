@@ -65,6 +65,50 @@ def NER_tags_noun_phrases(df):
     print(conclusions)
 
 
+def proper_nouns_over_NER(df,
+                          noun_col='POS_Tag',
+                          ner_col='NER_Tag_Normalized'):
+    """What fraction of NER tags are proper nouns?"""
+    print('What fraction of NER tags are proper nouns?')
+    ner_df = df[df[ner_col] != 'O']
+    nnp_token_count = len(ner_df[ner_df[noun_col] == 'NNP'])
+    print(f'Count of proper noun tokens among NER tokens: {nnp_token_count}')
+    print(f'Count of NER tokens: {len(ner_df)}')
+    print(
+        f'Percent of NER tokens that are proper noun tokens: {round(nnp_token_count / len(ner_df),4) * 100}%'
+    )
+    print()
+
+
+def NER_over_proper_nouns(df,
+                          noun_col='POS_Tag',
+                          ner_col='NER_Tag_Normalized'):
+    """What fraction of proper noun tokens are NER tagged?"""
+    print('What fraction of proper noun tokens are NER tagged?')
+    proper_noun_df = df[df[noun_col] == 'NNP']
+    ner_tag_token_count = len(proper_noun_df[proper_noun_df[ner_col] != 'O'])
+    print(
+        f'Count of NER tokens among proper noun tokens: {ner_tag_token_count}')
+    print(f'Count of proper noun tokens: {len(proper_noun_df)}')
+    print(
+        f'Percent of noun phrase tokens that are part of NER tags: {round(ner_tag_token_count / len(proper_noun_df), 4) * 100}%'
+    )
+    print()
+
+
+def NER_tags_proper_nouns(df):
+    conclusions = """
+    Conclusions:
+    1. NER Tags are almost exclusively proper nouns (~85%), which means that 
+        proper noun candidates will high recall for entity prediction tasks.
+    2. Proper nouns don't encompass much more than NER tags (~84%), which means proper
+        nouns will have high precision for entity prediction tasks.
+    """
+    proper_nouns_over_NER(df)
+    NER_over_proper_nouns(df)
+    print(conclusions)
+
+
 def evaluate_noun_phrase_detection():
     print(
         'Evaluate Unsupervised Noun Phrase Detection Against CoNLL-2000 chunking task.'
@@ -115,7 +159,7 @@ def get_nnp_candidate_phrases(articles):
 def prepare_scored_phrases(scored_candidates):
     df = pd.DataFrame(
         scored_candidates,
-        columns=['Predicted_Phrase', 'Noun_Phrase_Flag', 'Score'])
+        columns=['Predicted_Phrase', 'Predicted_Entity_Flag', 'Score'])
     df['Phrase_ID'] = df.index
     df['Predicted_Phrase'] = df['Predicted_Phrase'].apply(lambda x: x.split())
     df = df.explode('Predicted_Phrase')
@@ -125,10 +169,10 @@ def prepare_scored_phrases(scored_candidates):
     df['Predicted_Phrase'] = df['Predicted_Phrase'].replace('``', '"')
     return df
 
+
 def prepare_nnp_phrases(candidates):
-    df = pd.DataFrame(
-        candidates,
-        columns=['Predicted_Phrase', 'NNP_Phrase_Flag'])
+    df = pd.DataFrame(candidates,
+                      columns=['Predicted_Phrase', 'Predicted_Entity_Flag'])
     df['Phrase_ID'] = df.index
     df['Predicted_Phrase'] = df['Predicted_Phrase'].apply(lambda x: x.split())
     df = df.explode('Predicted_Phrase')
@@ -136,7 +180,7 @@ def prepare_nnp_phrases(candidates):
     return df
 
 
-def merge_dfs(train_df, prediction_df, nnp=False):
+def merge_dfs(train_df, prediction_df):
     assert len(train_df) == len(prediction_df)
     eval_df = pd.concat((train_df, prediction_df.reset_index(drop=True)),
                         axis=1)
@@ -144,10 +188,6 @@ def merge_dfs(train_df, prediction_df, nnp=False):
     eval_df = eval_df.dropna(subset=['Token'])
     assert (
         eval_df['Token'] == eval_df['Predicted_Phrase']).sum() == len(eval_df)
-    if nnp:
-        eval_df['Predicted_Entity_Flag'] = eval_df['NNP_Phrase_Flag']
-    else:
-        eval_df['Predicted_Entity_Flag'] = eval_df['Noun_Phrase_Flag']
     return eval_df
 
 
@@ -159,7 +199,7 @@ def optimize_threshold(eval_df, scoring_method='TFIDF', optimization_steps=32):
 
     predictions = []
     for thresh in np.arange(start, stop, step=step):
-        predictions.append((thresh, (eval_df['Noun_Phrase_Flag'] &
+        predictions.append((thresh, (eval_df['Predicted_Entity_Flag'] &
                                      (eval_df['Score'] >= thresh)).values))
 
     scores = []
@@ -178,7 +218,7 @@ def optimize_threshold(eval_df, scoring_method='TFIDF', optimization_steps=32):
     print(f'Range searched - start: {start}, stop: {stop}, step: {step}')
     print(
         classification_report(eval_df['NER_Tag_Flag'],
-                              (eval_df['Noun_Phrase_Flag'] &
+                              (eval_df['Predicted_Entity_Flag'] &
                                (eval_df['Score'] >= optimized_threshold))))
 
     return optimized_threshold, scores
@@ -187,7 +227,8 @@ def optimize_threshold(eval_df, scoring_method='TFIDF', optimization_steps=32):
 def evaluate(eval_df, scoring_method='TFIDF', optimization_steps=64):
     print()
     # baseline of just using noun phrases to identify entities (high recall, low precision)
-    print(f'{scoring_method} baseline using noun phrases to identify entities:')
+    print(
+        f'{scoring_method} baseline using noun phrases to identify entities:')
     print(
         classification_report(eval_df['NER_Tag_Flag'],
                               eval_df['Predicted_Entity_Flag']))
@@ -197,7 +238,8 @@ def evaluate(eval_df, scoring_method='TFIDF', optimization_steps=64):
         # use score and a threshold
         median_threshold = eval_df['Score'].describe()['50%']
         eval_df[f'Predicted_Entity_Flag_{scoring_method}_Median'] = (
-            eval_df['Noun_Phrase_Flag'] & (eval_df['Score'] > median_threshold))
+            eval_df['Predicted_Entity_Flag'] &
+            (eval_df['Score'] > median_threshold))
         print(
             f'Use the median {scoring_method} score ({round(median_threshold, 4)}) as a threshold to identify entities.'
         )
@@ -269,17 +311,57 @@ def evaluate_cosine_entity_detection(documents, df):
 
 
 def evaluate_nnp_entity_detection(documents, df):
-    chunk_parser = NounPhraseDetector()
     candidates = get_nnp_candidate_phrases(documents)
     prediction_df = prepare_nnp_phrases(candidates)
-    eval_df = merge_dfs(df, prediction_df, nnp=True)
+    eval_df = merge_dfs(df, prediction_df)
     results = evaluate(eval_df, scoring_method='NNP', optimization_steps=None)
+    return results
+
+
+def extract_entities(tree):
+    extractions = []
+    i = 0
+    while i < len(tree):
+        if isinstance(tree[i], nltk.Tree) and tree[i].label() == 'NE':
+            phrase = tree[i].leaves()
+            phrase_text = ' '.join([token for token, pos in phrase])
+            extractions.append((phrase_text, True))
+            i += 1
+        else:
+            phrase = []
+            while not isinstance(tree[i], nltk.Tree):
+                phrase.append(tree[i])
+                i += 1
+                if i == len(tree):
+                    break
+            phrase_text = ' '.join([token for token, pos in phrase])
+            extractions.append((phrase_text, False))
+    return extractions
+
+
+def evaluate_pretrained_entity_detector(documents, df):
+    candidates = []
+    for document in documents:
+        # manually tokenize because nltk tokenizer is converting 'C$' -> ['C', '$'] and throwing off comparison
+        sentences = utils.tokenize_text(document)
+        sentences = [sentence.split() for sentence in sentences]
+        sentences = utils.tag_pos(sentences)
+        for sentence in sentences:
+            tree = nltk.ne_chunk(sentence, binary=True)
+            extractions = extract_entities(tree)
+            candidates += extractions
+
+    prediction_df = prepare_nnp_phrases(candidates)
+    eval_df = merge_dfs(df, prediction_df)
+    results = evaluate(eval_df,
+                       scoring_method='Pretrained',
+                       optimization_steps=None)
     return results
 
 
 def plot_precision_recall(results, scoring_method='TFIDF'):
     results_df = pd.DataFrame(
-        results[1], columns=['Threshold', 'Macro-F1', 'Precision', 'Recall'])
+        results[1], columns=['Threshold', 'F1', 'Precision', 'Recall'])
     results_df.index = results_df['Threshold']
     results_df.drop(columns=['Threshold']).plot()
     os.makedirs('results', exist_ok=True)
@@ -295,12 +377,17 @@ def main(args):
     # confirm hypothesis that noun phrases are a superset of entities
     NER_tags_noun_phrases(train_df)
 
+    # confirm hypothesis that proper nouns and entities are essentially equal
+    NER_tags_proper_nouns(train_df)
+
     # evaluate noun phrase detector
     evaluate_noun_phrase_detection()
 
     # gather up articles
     articles = train_df.groupby(['Article_ID'], )['Token'].apply(
         lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
+
+    evaluate_pretrained_entity_detector(articles, train_df)
 
     # evaluate NNP prediction method
     evaluate_nnp_entity_detection(articles, train_df)
