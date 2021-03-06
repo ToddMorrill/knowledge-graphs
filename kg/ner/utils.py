@@ -55,3 +55,50 @@ def parse_document(document, parser, print_tree=False):
         if print_tree:
             result.draw()
     return results
+
+
+def prepare_report_df(report):
+    accuracy = report.pop('accuracy')
+    df = pd.DataFrame(report).T
+    df.index.name = 'Class'
+    df = df.reset_index()
+    df.columns = [x.title() for x in df.columns]
+    df['Class'] = df['Class'].apply(lambda x: x.title())
+    df['Support'] = df['Support'].astype(int)
+    return df
+
+
+def generate_table(df,
+                   index=False,
+                   column_format=None,
+                   caption=None,
+                   float_format='%.2f'):
+    # column_format='c | c | c',
+    # caption=('test caption', 'test'),
+    # label='tab:test'
+    table_string = df.to_latex(index=index,
+                               column_format=column_format,
+                               caption=caption,
+                               float_format=float_format,
+                               bold_rows=True)
+
+    if caption:
+        # if you add a caption, it will enclose everything in table environment
+        table_split = table_string.split('\n')
+        table_split[0] = table_split[0] + '[ht]'  # inline with text
+        table_string = '\n'.join(table_split)
+
+    # TODO: remove \toprule, \midrule, \bottomrule, add preferred borders
+    # TODO: bold column headers and row labels
+    return table_string
+
+
+def save_table(table_string, file_path):
+    with open(file_path, 'w') as f:
+        f.write(table_string)
+
+
+def latex_table(report, file_path):
+    df = prepare_report_df(report)
+    table_string = generate_table(df)
+    save_table(table_string, file_path)

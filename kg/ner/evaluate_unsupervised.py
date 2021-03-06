@@ -191,7 +191,10 @@ def merge_dfs(train_df, prediction_df):
     return eval_df
 
 
-def optimize_threshold(eval_df, scoring_method='TFIDF', optimization_steps=32):
+def optimize_threshold(eval_df,
+                       scoring_method='TFIDF',
+                       optimization_steps=32,
+                       table_directory=None):
     # optimize threshold to maximize macro f1
     start = eval_df['Score'].describe()['25%']
     stop = eval_df['Score'].describe()['75%']
@@ -220,11 +223,25 @@ def optimize_threshold(eval_df, scoring_method='TFIDF', optimization_steps=32):
         classification_report(eval_df['NER_Tag_Flag'],
                               (eval_df['Predicted_Entity_Flag'] &
                                (eval_df['Score'] >= optimized_threshold))))
+    if table_directory:
+        report = classification_report(
+            eval_df['NER_Tag_Flag'],
+            (eval_df['Predicted_Entity_Flag'] &
+             (eval_df['Score'] >= optimized_threshold)),
+            output_dict=True)
+        table_file_path = os.path.join(
+            table_directory,
+            f'{scoring_method}_entity_classification_report.tex')
+        # NB: this may overwrite an existing report
+        utils.latex_table(report, table_file_path)
 
     return optimized_threshold, scores
 
 
-def evaluate(eval_df, scoring_method='TFIDF', optimization_steps=64):
+def evaluate(eval_df,
+             scoring_method='TFIDF',
+             optimization_steps=64,
+             table_directory=None):
     print()
     # baseline of just using noun phrases to identify entities (high recall, low precision)
     print(
@@ -233,6 +250,15 @@ def evaluate(eval_df, scoring_method='TFIDF', optimization_steps=64):
         classification_report(eval_df['NER_Tag_Flag'],
                               eval_df['Predicted_Entity_Flag']))
     print()
+    if table_directory:
+        report = classification_report(eval_df['NER_Tag_Flag'],
+                                       eval_df['Predicted_Entity_Flag'],
+                                       output_dict=True)
+        table_file_path = os.path.join(
+            table_directory,
+            f'{scoring_method}_entity_classification_report.tex')
+        # if optimization_steps=None, this will be the final table, else optimize_threshold will overwrite
+        utils.latex_table(report, table_file_path)
 
     if optimization_steps:
         # use score and a threshold
@@ -248,10 +274,11 @@ def evaluate(eval_df, scoring_method='TFIDF', optimization_steps=64):
                 eval_df['NER_Tag_Flag'],
                 eval_df[f'Predicted_Entity_Flag_{scoring_method}_Median']))
 
-        return optimize_threshold(eval_df, scoring_method, optimization_steps)
+        return optimize_threshold(eval_df, scoring_method, optimization_steps,
+                                  table_directory)
 
 
-def evaluate_tfidf_entity_detection(documents, df):
+def evaluate_tfidf_entity_detection(documents, df, table_directory):
     chunk_parser = NounPhraseDetector()
     entity_scorer = TFIDFScorer(chunk_parser)
     # fit TFIDF model
@@ -260,11 +287,14 @@ def evaluate_tfidf_entity_detection(documents, df):
     scores = entity_scorer.score_phrases(candidates)
     prediction_df = prepare_scored_phrases(scores)
     eval_df = merge_dfs(df, prediction_df)
-    results = evaluate(eval_df, scoring_method='TFIDF', optimization_steps=64)
+    results = evaluate(eval_df,
+                       scoring_method='TFIDF',
+                       optimization_steps=64,
+                       table_directory=table_directory)
     return results
 
 
-def evaluate_textrank_entity_detection(documents, df):
+def evaluate_textrank_entity_detection(documents, df, table_directory):
     chunk_parser = NounPhraseDetector()
     # get scored phrases
     scored_candidates = []
@@ -286,11 +316,12 @@ def evaluate_textrank_entity_detection(documents, df):
     eval_df = merge_dfs(df, prediction_df)
     results = evaluate(eval_df,
                        scoring_method='TextRank',
-                       optimization_steps=64)
+                       optimization_steps=64,
+                       table_directory=table_directory)
     return results
 
 
-def evaluate_cosine_entity_detection(documents, df):
+def evaluate_cosine_entity_detection(documents, df, table_directory):
     chunk_parser = NounPhraseDetector()
     candidates = get_candidate_phrases(documents, chunk_parser)
     phrases, flags = zip(*candidates)
@@ -306,15 +337,21 @@ def evaluate_cosine_entity_detection(documents, df):
 
     prediction_df = prepare_scored_phrases(zip(phrases, flags, scores))
     eval_df = merge_dfs(df, prediction_df)
-    results = evaluate(eval_df, scoring_method='Cosine', optimization_steps=64)
+    results = evaluate(eval_df,
+                       scoring_method='Cosine',
+                       optimization_steps=64,
+                       table_directory=table_directory)
     return results
 
 
-def evaluate_nnp_entity_detection(documents, df):
+def evaluate_nnp_entity_detection(documents, df, table_directory):
     candidates = get_nnp_candidate_phrases(documents)
     prediction_df = prepare_nnp_phrases(candidates)
     eval_df = merge_dfs(df, prediction_df)
-    results = evaluate(eval_df, scoring_method='NNP', optimization_steps=None)
+    results = evaluate(eval_df,
+                       scoring_method='NNP',
+                       optimization_steps=None,
+                       table_directory=table_directory)
     return results
 
 
@@ -339,7 +376,7 @@ def extract_entities(tree):
     return extractions
 
 
-def evaluate_pretrained_entity_detector(documents, df):
+def evaluate_pretrained_entity_detector(documents, df, table_directory):
     candidates = []
     for document in documents:
         # manually tokenize because nltk tokenizer is converting 'C$' -> ['C', '$'] and throwing off comparison
@@ -355,7 +392,8 @@ def evaluate_pretrained_entity_detector(documents, df):
     eval_df = merge_dfs(df, prediction_df)
     results = evaluate(eval_df,
                        scoring_method='Pretrained',
-                       optimization_steps=None)
+                       optimization_steps=None,
+                       table_directory=table_directory)
     return results
 
 
@@ -370,6 +408,10 @@ def plot_precision_recall(results, scoring_method='TFIDF'):
 
 
 def main(args):
+    # reporting directory
+    table_directory = '../../reports/entity_detection/tables'
+    os.makedirs(table_directory, exist_ok=True)
+
     df_dict = utils.load_train_data(args.data_directory)
     train_df = df_dict['train.csv']
     train_df['NER_Tag_Flag'] = train_df['NER_Tag'] != 'O'
@@ -387,21 +429,24 @@ def main(args):
     articles = train_df.groupby(['Article_ID'], )['Token'].apply(
         lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
 
-    evaluate_pretrained_entity_detector(articles, train_df)
+    evaluate_pretrained_entity_detector(articles, train_df, table_directory)
 
     # evaluate NNP prediction method
-    evaluate_nnp_entity_detection(articles, train_df)
+    evaluate_nnp_entity_detection(articles, train_df, table_directory)
 
     # evaluate TFIDF scoring method
-    tfidf_results = evaluate_tfidf_entity_detection(articles, train_df)
+    tfidf_results = evaluate_tfidf_entity_detection(articles, train_df,
+                                                    table_directory)
     plot_precision_recall(tfidf_results, scoring_method='TFIDF')
 
     # evaluate TextRank scoring method
-    textrank_results = evaluate_textrank_entity_detection(articles, train_df)
+    textrank_results = evaluate_textrank_entity_detection(
+        articles, train_df, table_directory)
     plot_precision_recall(textrank_results, scoring_method='TextRank')
 
     # evaluate cosine scoring method
-    cosine_results = evaluate_cosine_entity_detection(articles, train_df)
+    cosine_results = evaluate_cosine_entity_detection(articles, train_df,
+                                                      table_directory)
     plot_precision_recall(cosine_results, scoring_method='Cosine')
 
 
