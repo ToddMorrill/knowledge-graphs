@@ -64,6 +64,8 @@ def prepare_report_df(report):
     df = df.reset_index()
     df.columns = [x.title() for x in df.columns]
     df['Class'] = df['Class'].apply(lambda x: x.title())
+    # remove column name
+    df = df.rename(columns={'Class': ''})
     df['Support'] = df['Support'].astype(int)
     return df
 

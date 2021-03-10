@@ -13,7 +13,7 @@ Implementation notes:
 2) Score the noun phrases using TFIDF and TextRank to yield untyped entities.
     - Empirically determine an appropriate cutoff threshold using the CoNLL-2003 validation set.
     - Score overlap with ground truth CoNLL-2003 untyped entities.
-3) Assign types to entities.
+3) TODO: Assign types to entities.
     - Cluster phrases using pre-trained language models (or hierarchically).
     - Need a metric to determine the appropriate number of clusters.
     - May be able to tune this process using the validation set.
@@ -159,9 +159,9 @@ class EntityScorer(object):
         self.parser = parser
 
     def extract(self,
-                   document: str,
-                   preprocess: bool = True,
-                   single_word_proper_nouns: bool = True) -> list:
+                document: str,
+                preprocess: bool = True,
+                single_word_proper_nouns: bool = True) -> list:
         """Extract a list of entity candidates from the pass document.
 
         Args:
