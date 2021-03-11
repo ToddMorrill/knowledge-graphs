@@ -27,6 +27,7 @@ Examples:
 
 import argparse
 from collections import Counter
+import itertools
 import math
 import string
 
@@ -143,6 +144,30 @@ class NounPhraseDetector(nltk.RegexpParser):
 
         return final_phrases
 
+class ProperNounDetector(object):
+    def __init__(self) -> None:
+        pass
+
+    def _flag_nnp(self, document):
+        groupings = []
+        for sentence in document:
+            for key, group in itertools.groupby(sentence, key=lambda x: x[1]):
+                grouping = ' '.join([token for token, pos in list(group)])
+                if key == 'NNP':
+                    groupings.append((grouping, True))
+                else:
+                    groupings.append((grouping, False))
+        return groupings
+
+
+    def extract(self, document: str,
+                preprocess: bool = True) -> list:
+        # optionally preprocess (tokenize sentences/words, tag POS)
+        if preprocess:
+            document = utils.preprocess(document)
+        
+        # get proper noun phrases
+        return self._flag_nnp(document)
 
 class EntityScorer(object):
     """An abstract base class that scores the likelihood of a phrase being an

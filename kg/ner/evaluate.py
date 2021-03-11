@@ -2,23 +2,21 @@
 
 Examples:
     $ python evaluate.py \
-        --data-directory /Users/tmorrill002/Documents/datasets/conll/transformed
+        --data-directory /Users/tmorrill002/Documents/datasets/conll/transformed \
+        --entity
 """
 import argparse
 import os
-import itertools
 
 import matplotlib.pyplot as plt
-import nltk
-from nltk import text
 from nltk.corpus import conll2000
 import numpy as np
 import pandas as pd
 from sentence_transformers import SentenceTransformer, util
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.metrics import classification_report
 
 import kg.ner.utils as utils
-from kg.ner.unsupervised import NounPhraseDetector, TFIDFScorer, TextRankScorer
+from kg.ner.unsupervised import NounPhraseDetector, ProperNounDetector, TFIDFScorer, TextRankScorer
 from kg.ner.supervised import BigramChunker, MaxEntChunker, PretrainedNEDetector
 
 
@@ -152,50 +150,17 @@ def get_candidate_phrases(articles, entity_scorer):
     return candidates
 
 
-def flag_nnp(article):
-    groupings = []
-    for sentence in article:
-        for key, group in itertools.groupby(sentence, key=lambda x: x[1]):
-            grouping = ' '.join([token for token, pos in list(group)])
-            if key == 'NNP':
-                groupings.append((grouping, True))
-            else:
-                groupings.append((grouping, False))
-    return groupings
-
-
-def get_nnp_candidate_phrases(articles):
-    # get candidate phrases
-    candidates = []
-    for article in articles:
-        # manually tokenize because nltk tokenizer is converting 'C$' -> ['C', '$'] and throwing off comparison
-        sentences = utils.tokenize_text(article)
-        article = [sentence.split() for sentence in sentences]
-        article = utils.tag_pos(article)
-        candidates += flag_nnp(article)
-    return candidates
-
-
-def prepare_scored_phrases(scored_candidates):
-    df = pd.DataFrame(
+def prepare_scored_phrases(
         scored_candidates,
-        columns=['Predicted_Phrase', 'Predicted_Entity_Flag', 'Score'])
+        columns=['Predicted_Phrase', 'Predicted_Entity_Flag', 'Score']):
+    df = pd.DataFrame(scored_candidates, columns=columns)
     df['Phrase_ID'] = df.index
     df['Predicted_Phrase'] = df['Predicted_Phrase'].apply(lambda x: x.split())
     df = df.explode('Predicted_Phrase')
-    # punctuation isn't getting assigned a score, fill with zero for now
-    df['Score'] = df['Score'].fillna(0.0)
+    if 'Score' in columns:
+        # punctuation isn't getting assigned a score, fill with zero for now
+        df['Score'] = df['Score'].fillna(0.0)
     # TODO: Investigate why this is happening
-    df['Predicted_Phrase'] = df['Predicted_Phrase'].replace('``', '"')
-    return df
-
-
-def prepare_nnp_phrases(candidates):
-    df = pd.DataFrame(candidates,
-                      columns=['Predicted_Phrase', 'Predicted_Entity_Flag'])
-    df['Phrase_ID'] = df.index
-    df['Predicted_Phrase'] = df['Predicted_Phrase'].apply(lambda x: x.split())
-    df = df.explode('Predicted_Phrase')
     df['Predicted_Phrase'] = df['Predicted_Phrase'].replace('``', '"')
     return df
 
@@ -424,8 +389,9 @@ def evaluate_cosine_entity_detection(train_documents, train_df, test_documents,
 
 
 def evaluate_nnp_entity_detection(documents, df, table_directory):
-    candidates = get_nnp_candidate_phrases(documents)
-    prediction_df = prepare_nnp_phrases(candidates)
+    candidates = get_candidate_phrases(documents, ProperNounDetector())
+    prediction_df = prepare_scored_phrases(
+        candidates, columns=['Predicted_Phrase', 'Predicted_Entity_Flag'])
     eval_df = merge_dfs(df, prediction_df)
     results = evaluate(eval_df,
                        scoring_method='NNP',
@@ -437,7 +403,8 @@ def evaluate_nnp_entity_detection(documents, df, table_directory):
 def evaluate_pretrained_entity_detector(documents, df, table_directory):
     pretrained_ne_detector = PretrainedNEDetector(binary=True)
     candidates = get_candidate_phrases(documents, pretrained_ne_detector)
-    prediction_df = prepare_nnp_phrases(candidates)
+    prediction_df = prepare_scored_phrases(
+        candidates, columns=['Predicted_Phrase', 'Predicted_Entity_Flag'])
     eval_df = merge_dfs(df, prediction_df)
     results = evaluate(eval_df,
                        scoring_method='Pretrained',
@@ -481,76 +448,78 @@ def main(args):
     train_df['NER_Tag_Flag'] = train_df['NER_Tag'] != 'O'
     val_df['NER_Tag_Flag'] = val_df['NER_Tag'] != 'O'
     test_df['NER_Tag_Flag'] = test_df['NER_Tag'] != 'O'
-    # confirm hypothesis that noun phrases are a superset of entities
-    NER_tags_noun_phrases(train_df)
 
-    # confirm hypothesis that proper nouns and entities are essentially equal
-    NER_tags_proper_nouns(train_df)
+    if args.eda:
+        # confirm hypothesis that noun phrases are a superset of entities
+        NER_tags_noun_phrases(train_df)
 
-    # evaluate unsupervised noun phrase detector
-    evaluate_noun_phrase_detection(NounPhraseDetector(),
-                                   train_sentences=None,
-                                   test_sentences=test_sentences,
-                                   method='unsupervised',
-                                   table_directory=table_directory)
+        # confirm hypothesis that proper nouns and entities are essentially equal
+        NER_tags_proper_nouns(train_df)
 
-    # evaluate bigram noun phrase detector
-    # evaluate_noun_phrase_detection(BigramChunker,
-    #                                train_sentences,
-    #                                test_sentences,
-    #                                method='bigram',
-    #                                table_directory=table_directory)
+    if args.noun_phrase:
+        # evaluate unsupervised noun phrase detector
+        evaluate_noun_phrase_detection(NounPhraseDetector(),
+                                       train_sentences=None,
+                                       test_sentences=test_sentences,
+                                       method='unsupervised',
+                                       table_directory=table_directory)
 
-    # # evaluate maxent noun phrase detector
-    # evaluate_noun_phrase_detection(MaxEntChunker,
-    #                                train_sentences,
-    #                                test_sentences,
-    #                                method='MaximumEntropy',
-    #                                table_directory=table_directory)
+        # evaluate bigram noun phrase detector
+        evaluate_noun_phrase_detection(BigramChunker,
+                                       train_sentences,
+                                       test_sentences,
+                                       method='bigram',
+                                       table_directory=table_directory)
 
-    # gather up articles
-    train_articles = train_df.groupby(['Article_ID'], )['Token'].apply(
-        lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
-    val_articles = val_df.groupby(['Article_ID'], )['Token'].apply(
-        lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
-    test_articles = test_df.groupby(['Article_ID'], )['Token'].apply(
-        lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
+        # evaluate maxent noun phrase detector
+        evaluate_noun_phrase_detection(MaxEntChunker,
+                                       train_sentences,
+                                       test_sentences,
+                                       method='MaximumEntropy',
+                                       table_directory=table_directory)
 
-    # evaluate pretrained NTLK entity detector
-    evaluate_pretrained_entity_detector(test_articles, test_df,
-                                        table_directory)
+    if args.entity:
+        # gather up articles
+        train_articles = train_df.groupby(['Article_ID'], )['Token'].apply(
+            lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
+        val_articles = val_df.groupby(['Article_ID'], )['Token'].apply(
+            lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
+        test_articles = test_df.groupby(['Article_ID'], )['Token'].apply(
+            lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
 
-    # evaluate NNP prediction method
-    evaluate_nnp_entity_detection(test_articles, test_df, table_directory)
+        # evaluate pretrained NTLK entity detector
+        evaluate_pretrained_entity_detector(test_articles, test_df,
+                                            table_directory)
 
-    # evaluate TFIDF scoring method
-    train_val_articles = train_articles + val_articles
-    train_val_df = pd.concat((train_df, val_df)).reset_index(drop=True)
-    tfidf_results = evaluate_tfidf_entity_detection(train_val_articles,
-                                                    train_val_df,
-                                                    test_articles, test_df,
-                                                    table_directory)
-    plot_precision_recall(tfidf_results,
-                          scoring_method='TFIDF',
-                          image_directory=image_directory)
+        # evaluate NNP prediction method
+        evaluate_nnp_entity_detection(test_articles, test_df, table_directory)
 
-    # evaluate TextRank scoring method
-    # TODO: debug
-    textrank_results = evaluate_textrank_entity_detection(
-        train_val_articles, train_val_df, test_articles, test_df,
-        table_directory)
-    plot_precision_recall(textrank_results,
-                          scoring_method='TextRank',
-                          image_directory=image_directory)
+        # evaluate TFIDF scoring method
+        train_val_articles = train_articles + val_articles
+        train_val_df = pd.concat((train_df, val_df)).reset_index(drop=True)
+        tfidf_results = evaluate_tfidf_entity_detection(
+            train_val_articles, train_val_df, test_articles, test_df,
+            table_directory)
+        plot_precision_recall(tfidf_results,
+                              scoring_method='TFIDF',
+                              image_directory=image_directory)
 
-    # evaluate cosine scoring method
-    cosine_results = evaluate_cosine_entity_detection(train_val_articles,
-                                                      train_val_df,
-                                                      test_articles, test_df,
-                                                      table_directory)
-    plot_precision_recall(cosine_results,
-                          scoring_method='Cosine',
-                          image_directory=image_directory)
+        # evaluate TextRank scoring method
+        # TODO: debug
+        textrank_results = evaluate_textrank_entity_detection(
+            train_val_articles, train_val_df, test_articles, test_df,
+            table_directory)
+        plot_precision_recall(textrank_results,
+                              scoring_method='TextRank',
+                              image_directory=image_directory)
+
+        # evaluate cosine scoring method
+        cosine_results = evaluate_cosine_entity_detection(
+            train_val_articles, train_val_df, test_articles, test_df,
+            table_directory)
+        plot_precision_recall(cosine_results,
+                              scoring_method='Cosine',
+                              image_directory=image_directory)
 
 
 if __name__ == '__main__':
@@ -559,5 +528,15 @@ if __name__ == '__main__':
         '--data-directory',
         type=str,
         help='Directory where train, validation, and test data are stored.')
+    parser.add_argument('--eda',
+                        help='If flag passed, run EDA code.',
+                        action='store_true')
+    parser.add_argument('--noun-phrase',
+                        help='If flag passed, run noun phrase detection code.',
+                        action='store_true')
+    parser.add_argument('--entity',
+                        help='If flag passed, run entity detection code.',
+                        action='store_true')
+
     args = parser.parse_args()
     main(args)

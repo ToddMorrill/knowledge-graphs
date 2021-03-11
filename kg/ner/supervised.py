@@ -16,11 +16,10 @@ Implementation notes:
         Recall:        92.4%%
         F-Measure:     91.0%%
 2) Supervised approaches to entity extraction
-    - Train Bigram/MaxEnt classifier directly?
+    - Train deep learning model directly
+    - Pretrained model
 3) Supervised approaches to assigning types to entities
-    - Predict types of existing entities?
-    - Predict entities and types in a single model?
-    - Score predictions against ground truth CoNLL-2003 typed entities.
+    - Train deep learning model directly
 
 Examples:
     $ python supervised.py \
@@ -38,12 +37,27 @@ import kg.ner.utils as utils
 
 
 class BigramChunker(nltk.ChunkParserI):
-    def __init__(self, train_sents):
-        train_data = [[(t, c) for w, t, c in nltk.chunk.tree2conlltags(sent)]
-                      for sent in train_sents]
+    """A class that uses bigrams to predict noun phrases.
+    """
+    def __init__(self, train_sentences: list) -> None:
+        """Initialize the chunker with training sentences mapped to chunk tags.
+
+        Args:
+            train_sentences (list): List of sentences in nltk.Tree format.
+        """
+        train_data = [[(pos, iob_tag) for word, pos, iob_tag in nltk.chunk.tree2conlltags(sent)]
+                      for sent in train_sentences]
         self.tagger = nltk.BigramTagger(train_data)
 
-    def parse(self, sentence):
+    def parse(self, sentence: list) -> nltk.Tree:
+        """Assigns a chunk tag to the tokens in the pass sentence.
+
+        Args:
+            sentence (list): Tuples of (word, part-of-speech).
+
+        Returns:
+            nltk.Tree: Tree of tokens, part-of-speech tags, and chunk tags.
+        """
         pos_tags = [pos for (word, pos) in sentence]
         tagged_pos_tags = self.tagger.tag(pos_tags)
         chunktags = [chunktag for (pos, chunktag) in tagged_pos_tags]
