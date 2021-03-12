@@ -26,26 +26,57 @@ def load_train_data(data_directory: str) -> dict:
     return df_dict
 
 
-def tokenize_text(document):
-    return nltk.sent_tokenize(document)
+def tokenize_sentences(sentences: list) -> list:
+    """Word tokenize each sentence in a list of sentences.
 
+    Args:
+        sentences (list): List of sentences.
 
-def tokenize_sentences(sentences):
+    Returns:
+        list: List of tokenized sentences.
+    """
     return [nltk.word_tokenize(sentence) for sentence in sentences]
 
 
-def tag_pos(sentences):
+def tag_pos(sentences: list) -> list:
+    """Tag parts of speech of tokens in each sentence.
+
+    Args:
+        sentences (list): List of word tokenized sentences.
+
+    Returns:
+        list: List of part-of-speech tagged sentences.
+    """
     return [nltk.pos_tag(sentence) for sentence in sentences]
 
 
-def preprocess(document):
-    sentences = tokenize_text(document)
+def preprocess(document: str) -> list:
+    """Preprocess document by splitting sentences, tokenizing sentences, and 
+    tagging parts-of-speech.
+
+    Args:
+        document (str): String document.
+
+    Returns:
+        list: Preprocessed document.
+    """
+    sentences = nltk.sent_tokenize(document)
     sentences = tokenize_sentences(sentences)
     sentences = tag_pos(sentences)
     return sentences
 
 
-def parse_document(document, parser, print_tree=False):
+def parse_document(document: str, parser, print_tree: bool = False) -> list:
+    """Parse a document and generate an nltk.Tree for each sentence.
+
+    Args:
+        document (str): String document.
+        parser (TBD): nltk style parser that returns a parse tree.
+        print_tree (bool, optional): Optionally display the parse tree for each sentence. Defaults to False.
+
+    Returns:
+        list: List of nltk.Trees.
+    """
     preprocessed_sentences = preprocess(document)
     results = []
     for sentence in preprocessed_sentences:
@@ -57,7 +88,15 @@ def parse_document(document, parser, print_tree=False):
     return results
 
 
-def prepare_report_df(report):
+def prepare_report_df(report: dict) -> pd.DataFrame:
+    """Convert sklearn classification report to a dataframe. 
+
+    Args:
+        report (dict): sklearn classification report.
+
+    Returns:
+        pd.DataFrame: Formatted dataframe.
+    """
     accuracy = report.pop('accuracy')
     df = pd.DataFrame(report).T
     df.index.name = 'Class'
@@ -70,11 +109,23 @@ def prepare_report_df(report):
     return df
 
 
-def generate_table(df,
-                   index=False,
-                   column_format=None,
-                   caption=None,
-                   float_format='%.2f'):
+def generate_table(df: pd.DataFrame,
+                   index: bool = False,
+                   column_format: str = None,
+                   caption: str = None,
+                   float_format: str = '%.2f') -> str:
+    """Generate a LaTeX table based on the passed dataframe.
+
+    Args:
+        df (pd.DataFrame): Dataframe.
+        index (bool, optional): If True, include the dataframe index in the LaTeX table. Defaults to False.
+        column_format (str, optional): LaTeX column format (e.g. 'c | c | c'). Defaults to None.
+        caption (str, optional): Table caption. Defaults to None.
+        float_format (str, optional): Formatting for floats. Defaults to '%.2f'.
+
+    Returns:
+        str: [description]
+    """
     # column_format='c | c | c',
     # caption=('test caption', 'test'),
     # label='tab:test'
@@ -95,12 +146,25 @@ def generate_table(df,
     return table_string
 
 
-def save_table(table_string, file_path):
+def save_table(table_string: str, file_path: str) -> None:
+    """Save the passed LaTeX table.
+
+    Args:
+        table_string (str): LaTeX table.
+        file_path (str): File destination.
+    """
     with open(file_path, 'w') as f:
         f.write(table_string)
 
 
-def latex_table(report, file_path):
+def latex_table(report: dict, file_path: str) -> None:
+    """Convert an sklearn style classification report into a LaTeX table and 
+    save the result.
+
+    Args:
+        report (dict): sklearn style classification report.
+        file_path (str): File destination.
+    """
     df = prepare_report_df(report)
     table_string = generate_table(df)
     save_table(table_string, file_path)

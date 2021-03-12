@@ -9,6 +9,7 @@ import argparse
 import os
 
 import matplotlib.pyplot as plt
+import nltk
 from nltk.corpus import conll2000
 import numpy as np
 import pandas as pd
@@ -142,7 +143,7 @@ def get_candidate_phrases(articles, entity_scorer):
     candidates = []
     for article in articles:
         # manually tokenize because nltk tokenizer is converting 'C$' -> ['C', '$'] and throwing off comparison
-        sentences = utils.tokenize_text(article)
+        sentences = nltk.sent_tokenize(article)
         article = [sentence.split() for sentence in sentences]
         article = utils.tag_pos(article)
         for candidate in entity_scorer.extract(article, preprocess=False):
@@ -303,7 +304,7 @@ def evaluate_textrank_entity_detection(train_documents, train_df,
         scorer.fit()
 
         # manually tokenize because nltk tokenizer is converting 'C$' -> ['C', '$'] and throwing off comparison
-        sentences = utils.tokenize_text(article)
+        sentences = nltk.sent_tokenize(article)
         article = [sentence.split() for sentence in sentences]
         article = utils.tag_pos(article)
         candidates = scorer.extract(article, preprocess=False)
@@ -327,7 +328,7 @@ def evaluate_textrank_entity_detection(train_documents, train_df,
         scorer.fit()
 
         # manually tokenize because nltk tokenizer is converting 'C$' -> ['C', '$'] and throwing off comparison
-        sentences = utils.tokenize_text(article)
+        sentences = nltk.sent_tokenize(article)
         article = [sentence.split() for sentence in sentences]
         article = utils.tag_pos(article)
         candidates = scorer.extract(article, preprocess=False)

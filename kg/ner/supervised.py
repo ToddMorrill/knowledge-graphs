@@ -45,8 +45,10 @@ class BigramChunker(nltk.ChunkParserI):
         Args:
             train_sentences (list): List of sentences in nltk.Tree format.
         """
-        train_data = [[(pos, iob_tag) for word, pos, iob_tag in nltk.chunk.tree2conlltags(sent)]
-                      for sent in train_sentences]
+        train_data = [[
+            (pos_tag, iob_tag)
+            for word, pos_tag, iob_tag in nltk.chunk.tree2conlltags(sent)
+        ] for sent in train_sentences]
         self.tagger = nltk.BigramTagger(train_data)
 
     def parse(self, sentence: list) -> nltk.Tree:
@@ -66,10 +68,17 @@ class BigramChunker(nltk.ChunkParserI):
         return nltk.chunk.conlltags2tree(conlltags)
 
 
-class ConsecutiveNPChunkTagger(nltk.TaggerI):
-    def __init__(self, train_sents):
+class MaxEntNPChunkTagger(nltk.TaggerI):
+    """Maximum Entropy classifier that identifies noun phrase chunks.
+    """
+    def __init__(self, train_sentences: list) -> None:
+        """Train the Maximum Entropy classifier on the training sentences.
+
+        Args:
+            train_sentences (list): Tuples of ((word, pos), iob_tag).
+        """
         train_set = []
-        for tagged_sent in train_sents:
+        for tagged_sent in train_sentences:
             untagged_sent = nltk.tag.untag(tagged_sent)
             history = []
             for i, (word, tag) in enumerate(tagged_sent):
@@ -78,7 +87,15 @@ class ConsecutiveNPChunkTagger(nltk.TaggerI):
                 history.append(tag)
         self.classifier = nltk.MaxentClassifier.train(train_set, trace=0)
 
-    def tag(self, sentence):
+    def tag(self, sentence: list) -> list:
+        """Tag the sentence's tokens with IOB chunk tags.
+
+        Args:
+            sentence (list): Tuples of (word, pos).
+
+        Returns:
+            list: Tuples of ((word, pos), iob_tag).
+        """
         history = []
         for i, word in enumerate(sentence):
             featureset = self._npchunk_features(sentence, i, history)
@@ -86,7 +103,16 @@ class ConsecutiveNPChunkTagger(nltk.TaggerI):
             history.append(tag)
         return zip(sentence, history)
 
-    def _tags_since_dt(self, sentence, i):
+    def _tags_since_dt(self, sentence: list, i: int) -> str:
+        """Utility function to compute the 'tags since last determiner'.
+
+        Args:
+            sentence (list): Tuples of (word, pos).
+            i (int): Sentence index.
+
+        Returns:
+            str: '+' delimited string of POS tags.
+        """
         tags = set()
         for word, pos in sentence[:i]:
             if pos == 'DT':
@@ -95,47 +121,91 @@ class ConsecutiveNPChunkTagger(nltk.TaggerI):
                 tags.add(pos)
         return '+'.join(sorted(tags))
 
-    def _npchunk_features(self, sentence, i, history):
+    def _npchunk_features(self, sentence: list, i: int, history: list) -> dict:
+        """Create features for the classifier.
+
+        Args:
+            sentence (list): Tuples of (word, pos).
+            i (int): Sentence index.
+            history (list): History of IOB tags.
+
+        Returns:
+            dict: Set of features.
+        """
         word, pos = sentence[i]
         if i == 0:
-            prevword, prevpos = "<START>", "<START>"
+            prevword, prevpos = '<START>', '<START>'
         else:
             prevword, prevpos = sentence[i - 1]
         if i == len(sentence) - 1:
-            nextword, nextpos = "<END>", "<END>"
+            nextword, nextpos = '<END>', '<END>'
         else:
             nextword, nextpos = sentence[i + 1]
         return {
-            "pos": pos,
-            "word": word,
-            "prevpos": prevpos,
-            "nextpos": nextpos,
-            "prevword": prevword,
-            "nextword": nextword,
-            "prevpos+pos": "%s+%s" % (prevpos, pos),
-            "pos+nextpos": "%s+%s" % (pos, nextpos),
-            "tags-since-dt": self._tags_since_dt(sentence, i)
+            'pos': pos,
+            'word': word,
+            'prevpos': prevpos,
+            'nextpos': nextpos,
+            'prevword': prevword,
+            'nextword': nextword,
+            'prevpos+pos': f'{prevpos}+{pos}',
+            'pos+nextpos': f'{pos}+{nextpos}',
+            'tags-since-dt': self._tags_since_dt(sentence, i)
         }
 
 
 class MaxEntChunker(nltk.ChunkParserI):
-    def __init__(self, train_sents):
-        tagged_sents = [[((w, t), c)
-                         for (w, t, c) in nltk.chunk.tree2conlltags(sent)]
-                        for sent in train_sents]
-        self.tagger = ConsecutiveNPChunkTagger(tagged_sents)
+    """Wrapper around the MaxEntNPChunkTagger that conforms to the 
+    nltk.ChunkParserI interface.
+    """
+    def __init__(self, train_sentences: list) -> None:
+        """Train the Maximum Entropy Classifier on the train sentences.
 
-    def parse(self, sentence):
-        tagged_sents = self.tagger.tag(sentence)
-        conlltags = [(w, t, c) for ((w, t), c) in tagged_sents]
+        Args:
+            train_sentences (list): nltk.Tree objects.
+        """
+        tagged_sentences = [[
+            ((word, pos), iob_tag)
+            for (word, pos, iob_tag) in nltk.chunk.tree2conlltags(sentence)
+        ] for sentence in train_sentences]
+        self.tagger = MaxEntNPChunkTagger(tagged_sentences)
+
+    def parse(self, sentence: list) -> nltk.Tree:
+        """Tag sentence's tokens with IOB chunk tags.
+
+        Args:
+            sentence (list): Tuples of (word, pos).
+
+        Returns:
+            nltk.Tree: Tree tagged with POS and IOB tags.
+        """
+        tagged_sentences = self.tagger.tag(sentence)
+        conlltags = [(word, pos, iob_tag)
+                     for ((word, pos), iob_tag) in tagged_sentences]
         return nltk.chunk.conlltags2tree(conlltags)
 
 
 class PretrainedNEDetector(object):
-    def __init__(self, binary=True) -> None:
+    """Pretrained NLTK named entity recognition model"""
+    def __init__(self, binary: bool = True) -> None:
+        """Initialize the detector.
+
+        Args:
+            binary (bool, optional): If True, make binary entity predictions, 
+            otherwise make multiclass predictions. Defaults to True.
+        """
         self.binary = binary
 
-    def extract(self, document: str, preprocess: bool = True):
+    def extract(self, document: str, preprocess: bool = True) -> list:
+        """Extract entities from the passed document.
+
+        Args:
+            document (str): String document.
+            preprocess (bool, optional): Optionally split sentences, tokenize, and tag parts-of-speech. Defaults to True.
+
+        Returns:
+            list: Tuples of (phrase, is_entity).
+        """
         # optionally preprocess (tokenize sentences/words, tag POS)
         if preprocess:
             document = utils.preprocess(document)
@@ -147,7 +217,15 @@ class PretrainedNEDetector(object):
             candidates += extractions
         return candidates
 
-    def _extract(self, tree):
+    def _extract(self, tree: nltk.Tree) -> list:
+        """Utility function to extract entities from a nltk.Tree.
+
+        Args:
+            tree (nltk.Tree): Tree containing tokens and entity tags.
+
+        Returns:
+            list: Tuples of (phrase, is_entity).
+        """
         extractions = []
         i = 0
         while i < len(tree):
@@ -190,7 +268,6 @@ def main(args):
     candidates = []
     for article in articles:
         candidates += pretrained_ne_detector.extract(article)
-    breakpoint()
 
 
 if __name__ == '__main__':

@@ -418,7 +418,7 @@ class TextRankScorer(EntityScorer):
 
 
 class EntityTypeDetector():
-    """Cluster based entity type detection"""
+    """Experimental cluster based entity type detection."""
     def __init__(self):
         self.vectorizer = SentenceTransformer(
             'paraphrase-distilroberta-base-v1')
@@ -448,6 +448,7 @@ class EntityTypeDetector():
 def main(args):
     df_dict = utils.load_train_data(args.data_directory)
     train_df = df_dict['train.csv']
+    
     # gather up articles
     articles = train_df.groupby(['Article_ID'], )['Token'].apply(
         lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
