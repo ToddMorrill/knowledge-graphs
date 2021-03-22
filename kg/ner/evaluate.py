@@ -17,7 +17,8 @@ from sentence_transformers import SentenceTransformer, util
 from sklearn.metrics import classification_report
 
 import kg.ner.utils as utils
-from kg.ner.unsupervised import NounPhraseDetector, ProperNounDetector, TFIDFScorer, TextRankScorer, ClusterEntityTypeDetector
+from kg.ner.unsupervised import NounPhraseDetector, ProperNounDetector, TFIDFScorer
+from kg.ner.unsupervised import TextRankScorer, ClusterEntityTypeDetector, CosineEntityTypeDetector
 from kg.ner.supervised import BigramChunker, MaxEntChunker, PretrainedNEDetector
 
 
@@ -368,11 +369,12 @@ def evaluate_textrank_entity_detection(train_documents, train_df,
 
 def evaluate_cosine_entity_detection(train_documents, train_df, test_documents,
                                      test_df, table_directory):
+    # TODO: move some of this code into unsupervised.py
     chunk_parser = NounPhraseDetector()
     candidates = get_candidate_phrases(train_documents, chunk_parser)
     phrases, flags = zip(*candidates)
 
-    # consine distance between phrases and entity indicator
+    # cosine distance between phrases and entity indicator
     vectorizer = SentenceTransformer(
         'paraphrase-distilroberta-base-v1')  # ('stsb-distilbert-base')
     phrase_embeddings = vectorizer.encode(phrases, convert_to_tensor=True)
@@ -383,10 +385,11 @@ def evaluate_cosine_entity_detection(train_documents, train_df, test_documents,
 
     prediction_df = prepare_scored_phrases(zip(phrases, flags, scores))
     eval_df = merge_dfs(train_df, prediction_df)
-    optimized_threshold, perf_scores = evaluate(eval_df,
-                                                scoring_method='Cosine_Train',
-                                                optimization_steps=64,
-                                                table_directory=None)
+    optimized_threshold, perf_scores = evaluate_entity_detection(
+        eval_df,
+        scoring_method='Cosine_Train',
+        optimization_steps=64,
+        table_directory=None)
 
     candidates = get_candidate_phrases(test_documents, chunk_parser)
     phrases, flags = zip(*candidates)
@@ -401,10 +404,10 @@ def evaluate_cosine_entity_detection(train_documents, train_df, test_documents,
     prediction_df = prepare_scored_phrases(zip(phrases, flags, scores))
     eval_df = merge_dfs(test_df, prediction_df)
     eval_df['Predicted_Entity_Flag'] = eval_df['Score'] >= optimized_threshold
-    evaluate(eval_df,
-             scoring_method='Cosine_Test',
-             optimization_steps=None,
-             table_directory=table_directory)
+    evaluate_entity_detection(eval_df,
+                              scoring_method='Cosine_Test',
+                              optimization_steps=None,
+                              table_directory=table_directory)
     return perf_scores
 
 
@@ -435,8 +438,8 @@ def evaluate_pretrained_entity_detector(documents, df, table_directory):
 
 def evaluate_cluster_named_entity(train_documents, train_df, test_documents,
                                   test_df, table_directory):
-    ne_detector = ProperNounDetector()
-    candidates = get_candidate_phrases(train_documents, ne_detector)
+    proper_noun_detector = ProperNounDetector()
+    candidates = get_candidate_phrases(train_documents, proper_noun_detector)
 
     # keep a global phrase index, add placeholder cluster id
     phrase, flag = zip(*candidates)
@@ -484,7 +487,7 @@ def evaluate_cluster_named_entity(train_documents, train_df, test_documents,
 
     # evaluate on the test set
     # TODO: refactor this
-    candidates = get_candidate_phrases(test_documents, ne_detector)
+    candidates = get_candidate_phrases(test_documents, proper_noun_detector)
 
     # keep a global phrase index, add placeholder cluster id
     phrase, flag = zip(*candidates)
@@ -520,6 +523,57 @@ def evaluate_cluster_named_entity(train_documents, train_df, test_documents,
     results = evaluate_named_entity_detection(
         test_eval_df,
         scoring_method='ClusterNamedEntity',
+        table_directory=table_directory)
+    return results
+
+
+def evaluate_cosine_named_entity(test_documents, test_df, table_directory):
+    proper_noun_detector = ProperNounDetector()
+    candidates = get_candidate_phrases(test_documents, proper_noun_detector)
+
+    # keep a global phrase index, add placeholder cluster id
+    phrase, flag = zip(*candidates)
+    candidates = list(zip(phrase, flag, ['O'] * len(candidates)))
+
+    # map proper noun phrase index to global phrase index
+    # pull out proper nouns to be encoded (make title case)
+    global_idx = []
+    proper_noun_phrases = []
+    for idx, phrase in enumerate(candidates):
+        phrase, flag, cluster_id = phrase
+        if flag:
+            global_idx.append(idx)
+            proper_noun_phrases.append(phrase.title())
+
+    entity_phrases = [
+        'not a person', 'not a location', 'not a organization',
+        'not a miscellaneous entity'
+    ]
+    type_detector = CosineEntityTypeDetector(entity_phrases)
+    type_predictions = type_detector.predict(proper_noun_phrases)
+
+    label_entity_type_mapping = {
+        0: 'PER',
+        1: 'LOC',
+        2: 'ORG',
+        3: 'MISC',
+        4: 'O'
+    }
+    # convert prediction class
+    for idx, label in enumerate(type_predictions):
+        phrase, flag, default_entity_type = candidates[global_idx[idx]]
+        # set entity type
+        entity_type = label_entity_type_mapping[label]
+        candidates[global_idx[idx]] = (phrase, flag, entity_type)
+
+    # split on spaces and compare to ground truth training set
+    columns = ['Predicted_Phrase', 'Predicted_Entity_Flag', 'Predicted_NER_Tag']
+    prediction_df = prepare_scored_phrases(candidates, columns=columns)
+    test_eval_df = merge_dfs(test_df, prediction_df)
+
+    results = evaluate_named_entity_detection(
+        test_eval_df,
+        scoring_method='CosineNamedEntity',
         table_directory=table_directory)
     return results
 
@@ -656,9 +710,11 @@ def main(args):
         test_articles = test_df.groupby(['Article_ID'], )['Token'].apply(
             lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
 
-        cluster_named_entity_results = evaluate_cluster_named_entity(
-            train_articles, train_df, test_articles, test_df,
-            named_entity_table_directory)
+        # cluster_named_entity_results = evaluate_cluster_named_entity(
+        #     train_articles, train_df, test_articles, test_df,
+        #     named_entity_table_directory)
+        
+        evaluate_cosine_named_entity(test_articles, test_df, named_entity_table_directory)
 
 
 if __name__ == '__main__':

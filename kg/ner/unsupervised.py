@@ -39,8 +39,10 @@ from nltk.corpus import conll2000
 import numpy as np
 import pandas as pd
 from scipy import stats
+import sentence_transformers
 from sentence_transformers import SentenceTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics import classification_report
 
 import kg.ner.utils as utils
 from kg.ner.cluster import Cluster
@@ -144,6 +146,7 @@ class NounPhraseDetector(nltk.RegexpParser):
 
         return final_phrases
 
+
 class ProperNounDetector(object):
     def __init__(self) -> None:
         pass
@@ -159,15 +162,14 @@ class ProperNounDetector(object):
                     groupings.append((grouping, False))
         return groupings
 
-
-    def extract(self, document: str,
-                preprocess: bool = True) -> list:
+    def extract(self, document: str, preprocess: bool = True) -> list:
         # optionally preprocess (tokenize sentences/words, tag POS)
         if preprocess:
             document = utils.preprocess(document)
-        
+
         # get proper noun phrases
         return self._flag_nnp(document)
+
 
 class EntityScorer(object):
     """An abstract base class that scores the likelihood of a phrase being an
@@ -439,11 +441,31 @@ class ClusterEntityTypeDetector(Cluster):
             print(df[df['Label'] == clus]['Phrase'].sample(
                 sample_size).values.tolist())
 
+
+class CosineEntityTypeDetector(object):
+    def __init__(self, entity_phrases) -> None:
+        self.vectorizer = SentenceTransformer(
+            'paraphrase-distilroberta-base-v1')
+        self.entity_phrases = self.encode(entity_phrases)
+
+    def encode(self, documents):
+        return self.vectorizer.encode(documents, convert_to_tensor=True)
+
+    def predict(self, documents, invert=True):
+        phrase_embeddings = self.encode(documents)
+        # cosine distance between phrases and entity indicator
+        scores = sentence_transformers.util.pytorch_cos_sim(
+            phrase_embeddings, self.entity_phrases)
+        if invert:
+            scores = 1 - scores
+        predictions = scores.argmax(dim=1).numpy()
+        return predictions
+
 def main(args):
     df_dict = utils.load_train_data(args.data_directory)
     train_df = df_dict['train.csv']
     train_df['NER_Tag_Flag'] = train_df['NER_Tag'] != 'O'
-    
+
     # gather up articles
     articles = train_df.groupby(['Article_ID'], )['Token'].apply(
         lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
@@ -466,13 +488,13 @@ def main(args):
         article = [sentence.split() for sentence in sentences]
         article = utils.tag_pos(article)
         candidates.extend(chunk_parser.extract(article, preprocess=False))
-    
+
     # keep a global phrase index, add placeholder cluster id
     phrase, flag = zip(*candidates)
-    candidates = list(zip(phrase, flag, [-1]*len(candidates)))
+    candidates = list(zip(phrase, flag, ['O'] * len(candidates)))
 
     # map proper noun phrase index to global phrase index
-    # pull out proper nouns for clustering (make title case)
+    # pull out proper nouns to be encoded (make title case)
     global_idx = []
     proper_noun_phrases = []
     for idx, phrase in enumerate(candidates):
@@ -480,36 +502,74 @@ def main(args):
         if flag:
             global_idx.append(idx)
             proper_noun_phrases.append(phrase.title())
-    
-    type_detector = ClusterEntityTypeDetector(proper_noun_phrases)
-    # number of classes in CoNLL-2003 data
-    type_detector.fit(k=4)
-    type_detector.k
-    for idx, label in enumerate(type_detector.model.labels_):
-        phrase, flag, cluster_id = candidates[global_idx[idx]]
-        # set cluster_id
-        candidates[global_idx[idx]] = (phrase, flag, label)
-    
-    print(type_detector.sample_clusters())
 
-    # split on spaces and compare to ground truth training set
+    entity_phrases = [
+        'not a person', 'not a location', 'not a organization',
+        'not a miscellaneous entity'
+    ]
+    type_detector = CosineEntityTypeDetector(entity_phrases)
+    type_predictions = type_detector.predict(proper_noun_phrases)
+
+    label_entity_type_mapping = {
+        0: 'PER',
+        1: 'LOC',
+        2: 'ORG',
+        3: 'MISC',
+        4: 'O'
+    }
+    # convert prediction class
+    for idx, label in enumerate(type_predictions):
+        phrase, flag, default_entity_type = candidates[global_idx[idx]]
+        # set entity type
+        entity_type = label_entity_type_mapping[label]
+        candidates[global_idx[idx]] = (phrase, flag, entity_type)
+
     from kg.ner.evaluate import prepare_scored_phrases, merge_dfs
-    prediction_df = prepare_scored_phrases(candidates, columns=['Predicted_Phrase', 'Predicted_Entity_Flag', 'Cluster_ID'])
+    prediction_df = prepare_scored_phrases(
+        candidates,
+        columns=['Predicted_Phrase', 'Predicted_Entity_Flag', 'Entity_Type'])
     train_eval_df = merge_dfs(train_df, prediction_df)
 
-    # for each cluster id, find the most common NER type and assign that to that cluster
-    cluster_id_ner_tag_map = {}
-    for val in train_eval_df['Cluster_ID'].unique():
-        subset_df = train_eval_df[train_eval_df['Cluster_ID'] == val]
-        # get NER tag with most votes
-        # NB: this might be skewed by the fact that some NER tags have more tokens on average
-        cluster_id_ner_tag_map[val] = subset_df['NER_Tag_Normalized'].value_counts().index[0]
-        
-    # assign NER tags and evaluate
-    train_eval_df['Predicted_NER_Tag'] = train_eval_df['Cluster_ID'].apply(lambda x: cluster_id_ner_tag_map[x])
+    print(
+        classification_report(train_eval_df['NER_Tag_Normalized'],
+                              train_eval_df['Entity_Type']))
+    breakpoint()
 
-    from sklearn.metrics import classification_report
-    print(classification_report(train_eval_df['NER_Tag_Normalized'], train_eval_df['Predicted_NER_Tag']))
+    # type_detector = ClusterEntityTypeDetector(proper_noun_phrases)
+    # # number of classes in CoNLL-2003 data
+    # type_detector.fit(k=4)
+    # type_detector.k
+    # for idx, label in enumerate(type_detector.model.labels_):
+    #     phrase, flag, cluster_id = candidates[global_idx[idx]]
+    #     # set cluster_id
+    #     candidates[global_idx[idx]] = (phrase, flag, label)
+
+    # print(type_detector.sample_clusters())
+
+    # # split on spaces and compare to ground truth training set
+    # from kg.ner.evaluate import prepare_scored_phrases, merge_dfs
+    # prediction_df = prepare_scored_phrases(
+    #     candidates,
+    #     columns=['Predicted_Phrase', 'Predicted_Entity_Flag', 'Cluster_ID'])
+    # train_eval_df = merge_dfs(train_df, prediction_df)
+
+    # # for each cluster id, find the most common NER type and assign that to that cluster
+    # cluster_id_ner_tag_map = {}
+    # for val in train_eval_df['Cluster_ID'].unique():
+    #     subset_df = train_eval_df[train_eval_df['Cluster_ID'] == val]
+    #     # get NER tag with most votes
+    #     # NB: this might be skewed by the fact that some NER tags have more tokens on average
+    #     cluster_id_ner_tag_map[val] = subset_df[
+    #         'NER_Tag_Normalized'].value_counts().index[0]
+
+    # # assign NER tags and evaluate
+    # train_eval_df['Predicted_NER_Tag'] = train_eval_df['Cluster_ID'].apply(
+    #     lambda x: cluster_id_ner_tag_map[x])
+
+    # from sklearn.metrics import classification_report
+    # print(
+    #     classification_report(train_eval_df['NER_Tag_Normalized'],
+    #                           train_eval_df['Predicted_NER_Tag']))
 
     # type_detector = EntityTypeDetector(proper_noun_phrases)
     # type_detector.find_k_fit(k_max=4, k_step=1, var_explained=20)
@@ -517,7 +577,7 @@ def main(args):
     # type_detector.model.labels_
     # print(type_detector.sample_clusters())
     breakpoint()
-    
+
     cluster_phrases = [phrase for phrase, flag in noun_phrases if flag]
     vectorizer = SentenceTransformer('paraphrase-distilroberta-base-v1')
     phrase_embeddings = vectorizer.encode(cluster_phrases)
