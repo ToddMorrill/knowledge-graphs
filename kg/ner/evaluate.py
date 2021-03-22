@@ -3,7 +3,7 @@
 Examples:
     $ python evaluate.py \
         --data-directory /Users/tmorrill002/Documents/datasets/conll/transformed \
-        --entity
+        --named-entity
 """
 import argparse
 import os
@@ -17,7 +17,7 @@ from sentence_transformers import SentenceTransformer, util
 from sklearn.metrics import classification_report
 
 import kg.ner.utils as utils
-from kg.ner.unsupervised import NounPhraseDetector, ProperNounDetector, TFIDFScorer, TextRankScorer
+from kg.ner.unsupervised import NounPhraseDetector, ProperNounDetector, TFIDFScorer, TextRankScorer, ClusterEntityTypeDetector
 from kg.ner.supervised import BigramChunker, MaxEntChunker, PretrainedNEDetector
 
 
@@ -146,8 +146,7 @@ def get_candidate_phrases(articles, entity_scorer):
         sentences = nltk.sent_tokenize(article)
         article = [sentence.split() for sentence in sentences]
         article = utils.tag_pos(article)
-        for candidate in entity_scorer.extract(article, preprocess=False):
-            candidates.append(candidate)
+        candidates.extend(entity_scorer.extract(article, preprocess=False))
     return candidates
 
 
@@ -223,10 +222,10 @@ def optimize_threshold(eval_df,
     return optimized_threshold, scores
 
 
-def evaluate(eval_df,
-             scoring_method='TFIDF',
-             optimization_steps=64,
-             table_directory=None):
+def evaluate_entity_detection(eval_df,
+                              scoring_method='TFIDF',
+                              optimization_steps=64,
+                              table_directory=None):
     print()
     # baseline of just using noun phrases to identify entities (high recall, low precision)
     print(
@@ -261,6 +260,26 @@ def evaluate(eval_df,
 
         return optimize_threshold(eval_df, scoring_method, optimization_steps,
                                   table_directory)
+
+
+def evaluate_named_entity_detection(eval_df,
+                                    scoring_method='ClusterNamedEntity',
+                                    table_directory=None):
+    print()
+    print(f'{scoring_method} approach to assign entities types:')
+    print(
+        classification_report(eval_df['NER_Tag_Normalized'],
+                              eval_df['Predicted_NER_Tag']))
+    print()
+    if table_directory:
+        report = classification_report(eval_df['NER_Tag_Normalized'],
+                                       eval_df['Predicted_NER_Tag'],
+                                       output_dict=True)
+        table_file_path = os.path.join(
+            table_directory,
+            f'{scoring_method}_named_entity_classification_report.tex')
+        # if optimization_steps=None, this will be the final table, else optimize_threshold will overwrite
+        utils.latex_table(report, table_file_path)
 
 
 def evaluate_tfidf_entity_detection(train_documents, train_df, test_documents,
@@ -414,6 +433,97 @@ def evaluate_pretrained_entity_detector(documents, df, table_directory):
     return results
 
 
+def evaluate_cluster_named_entity(train_documents, train_df, test_documents,
+                                  test_df, table_directory):
+    ne_detector = ProperNounDetector()
+    candidates = get_candidate_phrases(train_documents, ne_detector)
+
+    # keep a global phrase index, add placeholder cluster id
+    phrase, flag = zip(*candidates)
+    candidates = list(zip(phrase, flag, [-1] * len(candidates)))
+
+    # map proper noun phrase index to global phrase index
+    # pull out proper nouns for clustering (make title case)
+    global_idx = []
+    proper_noun_phrases = []
+    for idx, phrase in enumerate(candidates):
+        phrase, flag, cluster_id = phrase
+        if flag:
+            global_idx.append(idx)
+            proper_noun_phrases.append(phrase.title())
+
+    type_detector = ClusterEntityTypeDetector(proper_noun_phrases)
+    # number of classes in CoNLL-2003 data
+    type_detector.fit(k=4)
+
+    # assign cluster id to phrases
+    for idx, label in enumerate(type_detector.model.labels_):
+        phrase, flag, cluster_id = candidates[global_idx[idx]]
+        # set cluster_id
+        candidates[global_idx[idx]] = (phrase, flag, label)
+
+    # print(type_detector.sample_clusters())
+
+    # split on spaces and compare to ground truth training set
+    columns = ['Predicted_Phrase', 'Predicted_Entity_Flag', 'Cluster_ID']
+    prediction_df = prepare_scored_phrases(candidates, columns=columns)
+    train_eval_df = merge_dfs(train_df, prediction_df)
+
+    # for each cluster id, find the most common NER type and assign that to that cluster
+    cluster_id_ner_tag_map = {}
+    for val in train_eval_df['Cluster_ID'].unique():
+        subset_df = train_eval_df[train_eval_df['Cluster_ID'] == val]
+        # get NER tag with most votes
+        # NB: this might be skewed by the fact that some NER tags have more tokens on average
+        cluster_id_ner_tag_map[val] = subset_df[
+            'NER_Tag_Normalized'].value_counts().index[0]
+
+    # assign NER tags and evaluate
+    train_eval_df['Predicted_NER_Tag'] = train_eval_df['Cluster_ID'].apply(
+        lambda x: cluster_id_ner_tag_map[x])
+
+    # evaluate on the test set
+    # TODO: refactor this
+    candidates = get_candidate_phrases(test_documents, ne_detector)
+
+    # keep a global phrase index, add placeholder cluster id
+    phrase, flag = zip(*candidates)
+    candidates = list(zip(phrase, flag, [-1] * len(candidates)))
+
+    # map proper noun phrase index to global phrase index
+    # pull out proper nouns for clustering (make title case)
+    global_idx = []
+    proper_noun_phrases = []
+    for idx, phrase in enumerate(candidates):
+        phrase, flag, cluster_id = phrase
+        if flag:
+            global_idx.append(idx)
+            proper_noun_phrases.append(phrase.title())
+
+    test_phrase_vectors = type_detector.encode(proper_noun_phrases)
+    test_predictions = type_detector.model.predict(test_phrase_vectors)
+
+    # assign cluster id to phrases
+    for idx, label in enumerate(test_predictions):
+        phrase, flag, cluster_id = candidates[global_idx[idx]]
+        # set cluster_id
+        candidates[global_idx[idx]] = (phrase, flag, label)
+
+    columns = ['Predicted_Phrase', 'Predicted_Entity_Flag', 'Cluster_ID']
+    prediction_df = prepare_scored_phrases(candidates, columns=columns)
+    test_eval_df = merge_dfs(test_df, prediction_df)
+
+    # assign NER tags and evaluate
+    test_eval_df['Predicted_NER_Tag'] = test_eval_df['Cluster_ID'].apply(
+        lambda x: cluster_id_ner_tag_map[x])
+
+    results = evaluate_named_entity_detection(
+        test_eval_df,
+        scoring_method='ClusterNamedEntity',
+        table_directory=table_directory)
+    return results
+
+
 def plot_precision_recall(results,
                           scoring_method='TFIDF',
                           image_directory=None):
@@ -429,14 +539,26 @@ def plot_precision_recall(results,
         plt.savefig(os.path.join(image_directory, filename))
 
 
-def main(args):
-    # reporting directory
-    reporting_directory = '/Users/tmorrill002/Documents/knowledge-graphs/reports/entity_detection'
+def create_reporting_dirs(reporting_directory):
+    # entity reporting directory
     os.makedirs(reporting_directory, exist_ok=True)
     table_directory = os.path.join(reporting_directory, 'tables')
     os.makedirs(table_directory, exist_ok=True)
     image_directory = os.path.join(reporting_directory, 'images')
     os.makedirs(image_directory, exist_ok=True)
+    return table_directory, image_directory
+
+
+def main(args):
+    # entity reporting directory
+    entity_reporting_directory = '/Users/tmorrill002/Documents/knowledge-graphs/reports/entity_detection'
+    entity_table_directory, entity_image_directory = create_reporting_dirs(
+        entity_reporting_directory)
+
+    # named entity reporting directory
+    named_entity_reporting_directory = '/Users/tmorrill002/Documents/knowledge-graphs/reports/named_entity_detection'
+    named_entity_table_directory, named_entity_image_directory = create_reporting_dirs(
+        named_entity_reporting_directory)
 
     # CoNLL-2000 chunking task data
     train_sentences = conll2000.chunked_sents('train.txt', chunk_types=['NP'])
@@ -463,21 +585,23 @@ def main(args):
                                        train_sentences=None,
                                        test_sentences=test_sentences,
                                        method='unsupervised',
-                                       table_directory=table_directory)
+                                       table_directory=entity_table_directory)
 
         # evaluate bigram noun phrase detector
-        evaluate_noun_phrase_detection(BigramChunker,
-                                       train_sentences,
-                                       test_sentences,
-                                       method='bigram',
-                                       table_directory=table_directory)
+        evaluate_noun_phrase_detection(
+            BigramChunker,
+            train_sentences,
+            test_sentences,
+            method='bigram',
+            entity_table_directory=entity_table_directory)
 
         # evaluate maxent noun phrase detector
-        evaluate_noun_phrase_detection(MaxEntChunker,
-                                       train_sentences,
-                                       test_sentences,
-                                       method='MaximumEntropy',
-                                       table_directory=table_directory)
+        evaluate_noun_phrase_detection(
+            MaxEntChunker,
+            train_sentences,
+            test_sentences,
+            method='MaximumEntropy',
+            entity_table_directory=entity_table_directory)
 
     if args.entity:
         # gather up articles
@@ -490,17 +614,18 @@ def main(args):
 
         # evaluate pretrained NTLK entity detector
         evaluate_pretrained_entity_detector(test_articles, test_df,
-                                            table_directory)
+                                            entity_table_directory)
 
         # evaluate NNP prediction method
-        evaluate_nnp_entity_detection(test_articles, test_df, table_directory)
+        evaluate_nnp_entity_detection(test_articles, test_df,
+                                      entity_table_directory)
 
         # evaluate TFIDF scoring method
         train_val_articles = train_articles + val_articles
         train_val_df = pd.concat((train_df, val_df)).reset_index(drop=True)
         tfidf_results = evaluate_tfidf_entity_detection(
             train_val_articles, train_val_df, test_articles, test_df,
-            table_directory)
+            entity_table_directory)
         plot_precision_recall(tfidf_results,
                               scoring_method='TFIDF',
                               image_directory=image_directory)
@@ -509,7 +634,7 @@ def main(args):
         # TODO: debug
         textrank_results = evaluate_textrank_entity_detection(
             train_val_articles, train_val_df, test_articles, test_df,
-            table_directory)
+            entity_table_directory)
         plot_precision_recall(textrank_results,
                               scoring_method='TextRank',
                               image_directory=image_directory)
@@ -517,10 +642,23 @@ def main(args):
         # evaluate cosine scoring method
         cosine_results = evaluate_cosine_entity_detection(
             train_val_articles, train_val_df, test_articles, test_df,
-            table_directory)
+            entity_table_directory)
         plot_precision_recall(cosine_results,
                               scoring_method='Cosine',
                               image_directory=image_directory)
+
+    if args.named_entity:
+        # gather up articles
+        train_articles = train_df.groupby(['Article_ID'], )['Token'].apply(
+            lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
+        val_articles = val_df.groupby(['Article_ID'], )['Token'].apply(
+            lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
+        test_articles = test_df.groupby(['Article_ID'], )['Token'].apply(
+            lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
+
+        cluster_named_entity_results = evaluate_cluster_named_entity(
+            train_articles, train_df, test_articles, test_df,
+            named_entity_table_directory)
 
 
 if __name__ == '__main__':
@@ -538,6 +676,10 @@ if __name__ == '__main__':
     parser.add_argument('--entity',
                         help='If flag passed, run entity detection code.',
                         action='store_true')
+    parser.add_argument(
+        '--named-entity',
+        help='If flag passed, run named entity detection code.',
+        action='store_true')
 
     args = parser.parse_args()
     main(args)

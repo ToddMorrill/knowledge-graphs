@@ -417,52 +417,107 @@ class TextRankScorer(EntityScorer):
         return final_ranks
 
 
-class EntityTypeDetector():
+class ClusterEntityTypeDetector(Cluster):
     """Experimental cluster based entity type detection."""
-    def __init__(self):
+    def __init__(self, documents):
         self.vectorizer = SentenceTransformer(
             'paraphrase-distilroberta-base-v1')
-
-    def fit(self,
-            documents,
-            k_max=80,
-            k_step=4,
-            var_explained=50,
-            directory='results'):
         self.documents = documents
-        phrase_embeddings = self.vectorizer.encode(documents)
-        self.cluster = Cluster(phrase_embeddings)
-        self.cluster.find_k_fit(k_max, k_step, var_explained)
-        self.cluster.plot_elbows(directory)
+        phrase_embeddings = self.encode(documents)
+        super().__init__(phrase_embeddings)
+
+    def encode(self, documents):
+        return self.vectorizer.encode(documents)
 
     def sample_clusters(self):
-        df = pd.DataFrame(zip(self.documents, self.cluster.model.labels_),
+        # can only be called after fit()
+        df = pd.DataFrame(zip(self.documents, self.model.labels_),
                           columns=['Phrase', 'Label'])
-        for clus in range(self.cluster.k):
+        for clus in range(self.k):
             print("Cluster: {}".format(clus))
             sample_size = min(len(df[df['Label'] == clus]), 10)
             print(df[df['Label'] == clus]['Phrase'].sample(
                 sample_size).values.tolist())
 
-
 def main(args):
     df_dict = utils.load_train_data(args.data_directory)
     train_df = df_dict['train.csv']
+    train_df['NER_Tag_Flag'] = train_df['NER_Tag'] != 'O'
     
     # gather up articles
     articles = train_df.groupby(['Article_ID'], )['Token'].apply(
         lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
 
-    chunk_parser = NounPhraseDetector()
+    chunk_parser = ProperNounDetector()
 
-    noun_phrases = []
+    # keep a global phrase index, add placeholder cluster id
+    # map proper noun phrase index to global phrase index
+    # make all phrases title cased
+    # cluster noun phrases
+    # assign cluster id to global phrase sequence
+    # split on spaces and compare to ground truth training set
+    # for each cluster id, find the most common NER type and assign that to that cluster
+
+    # get candidate phrases
+    candidates = []
     for article in articles:
-        noun_phrases += chunk_parser.extract(article)
+        # manually tokenize because nltk tokenizer is converting 'C$' -> ['C', '$'] and throwing off comparison
+        sentences = nltk.sent_tokenize(article)
+        article = [sentence.split() for sentence in sentences]
+        article = utils.tag_pos(article)
+        candidates.extend(chunk_parser.extract(article, preprocess=False))
+    
+    # keep a global phrase index, add placeholder cluster id
+    phrase, flag = zip(*candidates)
+    candidates = list(zip(phrase, flag, [-1]*len(candidates)))
 
-    # type_detector = EntityTypeDetector()
-    # type_detector.fit(cluster_phrases, k_max=10, k_step=1, var_explained=20)
-    # type_detector.cluster.k
-    # type_detector.cluster.model.labels_
+    # map proper noun phrase index to global phrase index
+    # pull out proper nouns for clustering (make title case)
+    global_idx = []
+    proper_noun_phrases = []
+    for idx, phrase in enumerate(candidates):
+        phrase, flag, cluster_id = phrase
+        if flag:
+            global_idx.append(idx)
+            proper_noun_phrases.append(phrase.title())
+    
+    type_detector = ClusterEntityTypeDetector(proper_noun_phrases)
+    # number of classes in CoNLL-2003 data
+    type_detector.fit(k=4)
+    type_detector.k
+    for idx, label in enumerate(type_detector.model.labels_):
+        phrase, flag, cluster_id = candidates[global_idx[idx]]
+        # set cluster_id
+        candidates[global_idx[idx]] = (phrase, flag, label)
+    
+    print(type_detector.sample_clusters())
+
+    # split on spaces and compare to ground truth training set
+    from kg.ner.evaluate import prepare_scored_phrases, merge_dfs
+    prediction_df = prepare_scored_phrases(candidates, columns=['Predicted_Phrase', 'Predicted_Entity_Flag', 'Cluster_ID'])
+    train_eval_df = merge_dfs(train_df, prediction_df)
+
+    # for each cluster id, find the most common NER type and assign that to that cluster
+    cluster_id_ner_tag_map = {}
+    for val in train_eval_df['Cluster_ID'].unique():
+        subset_df = train_eval_df[train_eval_df['Cluster_ID'] == val]
+        # get NER tag with most votes
+        # NB: this might be skewed by the fact that some NER tags have more tokens on average
+        cluster_id_ner_tag_map[val] = subset_df['NER_Tag_Normalized'].value_counts().index[0]
+        
+    # assign NER tags and evaluate
+    train_eval_df['Predicted_NER_Tag'] = train_eval_df['Cluster_ID'].apply(lambda x: cluster_id_ner_tag_map[x])
+
+    from sklearn.metrics import classification_report
+    print(classification_report(train_eval_df['NER_Tag_Normalized'], train_eval_df['Predicted_NER_Tag']))
+
+    # type_detector = EntityTypeDetector(proper_noun_phrases)
+    # type_detector.find_k_fit(k_max=4, k_step=1, var_explained=20)
+    # type_detector.k
+    # type_detector.model.labels_
+    # print(type_detector.sample_clusters())
+    breakpoint()
+    
     cluster_phrases = [phrase for phrase, flag in noun_phrases if flag]
     vectorizer = SentenceTransformer('paraphrase-distilroberta-base-v1')
     phrase_embeddings = vectorizer.encode(cluster_phrases)
