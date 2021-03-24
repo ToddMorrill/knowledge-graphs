@@ -465,6 +465,92 @@ class CosineEntityTypeDetector(object):
         return predictions
 
 
+class SpacyEntityTypeDetector(object):
+    def __init__(self,
+                 entity_type_mapping=None,
+                 model='en_core_web_lg') -> None:
+        self.entity_type_mapping = entity_type_mapping
+        self.nlp = spacy.load(model)
+
+    @staticmethod
+    def prepare_for_spacy(df):
+        sentences = df.groupby([
+            'Article_ID', 'Sentence_ID'
+        ])['Token'].apply(lambda x: [str(y) for y in list(x)])
+        tokenized_articles = sentences.reset_index().groupby(
+            ['Article_ID'])['Token'].apply(list).values.tolist()
+        return tokenized_articles
+
+    def tag_docs(self, tokenized_documents):
+        # accepts list of documents, where each document is a list of tokenized sentences
+        tagged_tokens = []
+        for article in tokenized_documents:
+            # manually create spaCy Doc
+            words = []
+            sent_starts = []
+            for sentence in article:
+                for idx, word in enumerate(sentence):
+                    if idx == 0:
+                        sent_starts.append(True)
+                    else:
+                        sent_starts.append(False)
+                    words.append(word)
+
+            doc = Doc(self.nlp.vocab, words=words, sent_starts=sent_starts)
+            temp_tagged_tokens = []
+            # TODO: is the the best way to do this?
+            for token in self.nlp.get_pipe('ner')(doc):
+                ent_type = token.ent_type_ if token.ent_type_ else 'O'
+                temp_tagged_tokens.append((token.text, ent_type))
+
+            tagged_tokens.extend(temp_tagged_tokens)
+        prediction_df = pd.DataFrame(
+            tagged_tokens, columns=['Predicted_Phrase', 'Predicted_NER_Tag'])
+
+        return prediction_df
+
+    def _normalize_type(self, df):
+        df['Predicted_NER_Tag_Original'] = df['Predicted_NER_Tag']
+        # overwrite with mapping
+        df['Predicted_NER_Tag'] = df['Predicted_NER_Tag'].apply(
+            lambda x: self.entity_type_mapping[x])
+        return df
+
+    def fit(self, train_df):
+        tokenized_docs = self.prepare_for_spacy(train_df)
+        prediction_df = self.tag_docs(tokenized_docs)
+        eval_df = utils.merge_dfs(train_df, prediction_df)
+        eval_df['Predicted_NER_Tag'].value_counts()
+
+        # https://catalog.ldc.upenn.edu/docs/LDC2013T19/OntoNotes-Release-5.0.pdf (page 21)
+        # let the data drive the mapping from predicted NER to CoNLL-2003 tags
+        grouped_data = eval_df.groupby(
+            ['Predicted_NER_Tag',
+             'NER_Tag_Normalized']).agg(Count=('NER_Tag_Normalized', 'count'))
+        mapping_df = grouped_data.loc[grouped_data.groupby(
+            ['Predicted_NER_Tag'])['Count'].idxmax()].reset_index()
+        self.entity_type_mapping = dict(
+            zip(mapping_df['Predicted_NER_Tag'],
+                mapping_df['NER_Tag_Normalized']))
+
+        eval_df = self._normalize_type(eval_df)
+
+        return eval_df
+    
+    def predict(self, df, ground_truth_df=None):
+        tokenized_docs = self.prepare_for_spacy(df)
+        prediction_df = self.tag_docs(tokenized_docs)
+        if ground_truth_df is not None:
+            prediction_df = utils.merge_dfs(df, prediction_df)
+        prediction_df = self._normalize_type(prediction_df)
+        return prediction_df
+
+    def evaluate(self, eval_df):
+        print(
+            classification_report(eval_df['NER_Tag_Normalized'],
+                                  eval_df['Entity_Type']))
+
+
 def main(args):
     df_dict = utils.load_train_data(args.data_directory)
     train_df = df_dict['train.csv']
@@ -473,70 +559,69 @@ def main(args):
     # gather up articles
     articles = train_df.groupby(['Article_ID'])['Token'].apply(
         lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
-
-    sentences = train_df.groupby(
-        ['Article_ID',
-         'Sentence_ID'])['Token'].apply(lambda x: [str(y) for y in list(x)])
-
-    tokenized_articles = sentences.reset_index().groupby(
-        ['Article_ID'])['Token'].apply(list).values.tolist()
-
-    nlp = spacy.load('en_core_web_lg')
-
-    tagged_tokens = []
-    for article in tokenized_articles:
-        # manually create spaCy Doc
-        words = []
-        sent_starts = []
-        for sentence in article:
-            for idx, word in enumerate(sentence):
-                if idx == 0:
-                    sent_starts.append(True)
-                else:
-                    sent_starts.append(False)
-                words.append(word)
-
-        doc = Doc(nlp.vocab, words=words, sent_starts=sent_starts)
-        temp_tagged_tokens = []
-        for token in nlp.get_pipe('ner')(doc):
-            ent_type = token.ent_type_ if token.ent_type_ else 'O'
-            temp_tagged_tokens.append((token.text, ent_type))
-
-        tagged_tokens.extend(temp_tagged_tokens)
-
-    prediction_df = pd.DataFrame(
-        tagged_tokens, columns=['Predicted_Phrase', 'Predicted_NER_Tag'])
-
-    from kg.ner.evaluate import merge_dfs
-
-    eval_df = merge_dfs(train_df, prediction_df)
-    eval_df['Predicted_NER_Tag'].value_counts()
-    tag_type_mapping = {
-        'O': 'O',
-        'PERSON': 'PER',
-        'ORG': 'ORG',
-        'GPE': 'ORG',
-        'DATE': 'MISC',  # ?
-        'CARDINAL': 'MISC',  # ?
-        'NORP': 'MISC',
-        'MONEY': 'MISC',
-        'QUANTITY': 'MISC',
-        'TIME': 'MISC',
-        'ORDINAL': 'MISC',
-        'PERCENT': 'MISC',
-        'EVENT': 'MISC',
-        'LOC': 'MISC',
-        'WORK_OF_ART': 'MISC',
-        'PRODUCT': 'MISC',
-        'FAC': 'MISC',
-        'LAW': 'MISC',
-        'LANGUAGE': 'MISC'
-    }
-    eval_df['Entity_Type'] = eval_df['Predicted_NER_Tag'].apply(lambda x: tag_type_mapping[x])
-    print(
-        classification_report(eval_df['NER_Tag_Normalized'],
-                                eval_df['Entity_Type']))
+    
+    type_detector = SpacyEntityTypeDetector()
+    eval_df = type_detector.fit(train_df)
+    type_detector.evaluate(eval_df)
+    test_df = df_dict['test.csv']
+    test_eval_df = type_detector.predict(test_df, test_df)
+    type_detector.evaluate(test_eval_df)
     breakpoint()
+
+    # sentences = train_df.groupby(
+    #     ['Article_ID',
+    #      'Sentence_ID'])['Token'].apply(lambda x: [str(y) for y in list(x)])
+
+    # tokenized_articles = sentences.reset_index().groupby(
+    #     ['Article_ID'])['Token'].apply(list).values.tolist()
+
+    # nlp = spacy.load('en_core_web_lg')
+
+    # tagged_tokens = []
+    # for article in tokenized_articles:
+    #     # manually create spaCy Doc
+    #     words = []
+    #     sent_starts = []
+    #     for sentence in article:
+    #         for idx, word in enumerate(sentence):
+    #             if idx == 0:
+    #                 sent_starts.append(True)
+    #             else:
+    #                 sent_starts.append(False)
+    #             words.append(word)
+
+    #     doc = Doc(nlp.vocab, words=words, sent_starts=sent_starts)
+    #     temp_tagged_tokens = []
+    #     for token in nlp.get_pipe('ner')(doc):
+    #         ent_type = token.ent_type_ if token.ent_type_ else 'O'
+    #         temp_tagged_tokens.append((token.text, ent_type))
+
+    #     tagged_tokens.extend(temp_tagged_tokens)
+
+    # prediction_df = pd.DataFrame(
+    #     tagged_tokens, columns=['Predicted_Phrase', 'Predicted_NER_Tag'])
+
+    # from kg.ner.evaluate import merge_dfs
+
+    # eval_df = merge_dfs(train_df, prediction_df)
+    # eval_df['Predicted_NER_Tag'].value_counts()
+    # # let the data drive the mapping from predicted NER to CoNLL-2003 tags
+    # grouped_data = eval_df.groupby(['Predicted_NER_Tag', 'NER_Tag_Normalized'
+    #                                 ]).agg(Count=('NER_Tag_Normalized',
+    #                                               'count'))
+    # mapping_df = grouped_data.loc[grouped_data.groupby(
+    #     ['Predicted_NER_Tag'])['Count'].idxmax()].reset_index()
+    # tag_type_mapping = dict(
+    #     zip(mapping_df['Predicted_NER_Tag'], mapping_df['NER_Tag_Normalized']))
+
+    # # https://catalog.ldc.upenn.edu/docs/LDC2013T19/OntoNotes-Release-5.0.pdf
+
+    # eval_df['Entity_Type'] = eval_df['Predicted_NER_Tag'].apply(
+    #     lambda x: tag_type_mapping[x])
+    # print(
+    #     classification_report(eval_df['NER_Tag_Normalized'],
+    #                           eval_df['Entity_Type']))
+    # breakpoint()
 
     chunk_parser = ProperNounDetector()
 

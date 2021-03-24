@@ -19,6 +19,7 @@ from sklearn.metrics import classification_report
 import kg.ner.utils as utils
 from kg.ner.unsupervised import NounPhraseDetector, ProperNounDetector, TFIDFScorer
 from kg.ner.unsupervised import TextRankScorer, ClusterEntityTypeDetector, CosineEntityTypeDetector
+from kg.ner.unsupervised import SpacyEntityTypeDetector
 from kg.ner.supervised import BigramChunker, MaxEntChunker, PretrainedNEDetector
 
 
@@ -166,16 +167,6 @@ def prepare_scored_phrases(
     return df
 
 
-def merge_dfs(df, prediction_df):
-    assert len(df) == len(prediction_df)
-    eval_df = pd.concat((df, prediction_df.reset_index(drop=True)), axis=1)
-    # TODO: why are some CoNLL-2003 tokens NaN?
-    eval_df = eval_df.dropna(subset=['Token'])
-    assert (
-        eval_df['Token'] == eval_df['Predicted_Phrase']).sum() == len(eval_df)
-    return eval_df
-
-
 def optimize_threshold(eval_df,
                        scoring_method='TFIDF',
                        optimization_steps=32,
@@ -292,7 +283,7 @@ def evaluate_tfidf_entity_detection(train_documents, train_df, test_documents,
     candidates = get_candidate_phrases(train_documents, entity_scorer)
     scores = entity_scorer.score_phrases(candidates)
     prediction_df = prepare_scored_phrases(scores)
-    eval_df = merge_dfs(train_df, prediction_df)
+    eval_df = utils.merge_dfs(train_df, prediction_df)
     optimized_threshold, perf_scores = evaluate(eval_df,
                                                 scoring_method='TFIDF_Train',
                                                 optimization_steps=64,
@@ -302,7 +293,7 @@ def evaluate_tfidf_entity_detection(train_documents, train_df, test_documents,
     candidates = get_candidate_phrases(test_documents, entity_scorer)
     scores = entity_scorer.score_phrases(candidates)
     prediction_df = prepare_scored_phrases(scores)
-    eval_df = merge_dfs(test_df, prediction_df)
+    eval_df = utils.merge_dfs(test_df, prediction_df)
     eval_df['Predicted_Entity_Flag'] = eval_df['Score'] >= optimized_threshold
     evaluate(eval_df,
              scoring_method='TFIDF_Test',
@@ -333,7 +324,7 @@ def evaluate_textrank_entity_detection(train_documents, train_df,
         for candidate in scorer.score_phrases(candidates):
             scored_candidates.append(candidate)
     prediction_df = prepare_scored_phrases(scored_candidates)
-    eval_df = merge_dfs(train_df, prediction_df)
+    eval_df = utils.merge_dfs(train_df, prediction_df)
     optimized_threshold, perf_scores = evaluate(
         eval_df,
         scoring_method='TextRank_Train',
@@ -357,7 +348,7 @@ def evaluate_textrank_entity_detection(train_documents, train_df,
         for candidate in scorer.score_phrases(candidates):
             scored_candidates.append(candidate)
     prediction_df = prepare_scored_phrases(scored_candidates)
-    eval_df = merge_dfs(test_df, prediction_df)
+    eval_df = utils.merge_dfs(test_df, prediction_df)
     eval_df['Predicted_Entity_Flag'] = eval_df['Score'] >= optimized_threshold
     evaluate(eval_df,
              scoring_method='TextRank_Test',
@@ -384,7 +375,7 @@ def evaluate_cosine_entity_detection(train_documents, train_df, test_documents,
     scores = np.squeeze(scores).numpy()
 
     prediction_df = prepare_scored_phrases(zip(phrases, flags, scores))
-    eval_df = merge_dfs(train_df, prediction_df)
+    eval_df = utils.merge_dfs(train_df, prediction_df)
     optimized_threshold, perf_scores = evaluate_entity_detection(
         eval_df,
         scoring_method='Cosine_Train',
@@ -402,7 +393,7 @@ def evaluate_cosine_entity_detection(train_documents, train_df, test_documents,
     scores = np.squeeze(scores).numpy()
 
     prediction_df = prepare_scored_phrases(zip(phrases, flags, scores))
-    eval_df = merge_dfs(test_df, prediction_df)
+    eval_df = utils.merge_dfs(test_df, prediction_df)
     eval_df['Predicted_Entity_Flag'] = eval_df['Score'] >= optimized_threshold
     evaluate_entity_detection(eval_df,
                               scoring_method='Cosine_Test',
@@ -415,7 +406,7 @@ def evaluate_nnp_entity_detection(documents, df, table_directory):
     candidates = get_candidate_phrases(documents, ProperNounDetector())
     prediction_df = prepare_scored_phrases(
         candidates, columns=['Predicted_Phrase', 'Predicted_Entity_Flag'])
-    eval_df = merge_dfs(df, prediction_df)
+    eval_df = utils.merge_dfs(df, prediction_df)
     results = evaluate(eval_df,
                        scoring_method='NNP',
                        optimization_steps=None,
@@ -428,7 +419,7 @@ def evaluate_pretrained_entity_detector(documents, df, table_directory):
     candidates = get_candidate_phrases(documents, pretrained_ne_detector)
     prediction_df = prepare_scored_phrases(
         candidates, columns=['Predicted_Phrase', 'Predicted_Entity_Flag'])
-    eval_df = merge_dfs(df, prediction_df)
+    eval_df = utils.merge_dfs(df, prediction_df)
     results = evaluate(eval_df,
                        scoring_method='Pretrained',
                        optimization_steps=None,
@@ -470,7 +461,7 @@ def evaluate_cluster_named_entity(train_documents, train_df, test_documents,
     # split on spaces and compare to ground truth training set
     columns = ['Predicted_Phrase', 'Predicted_Entity_Flag', 'Cluster_ID']
     prediction_df = prepare_scored_phrases(candidates, columns=columns)
-    train_eval_df = merge_dfs(train_df, prediction_df)
+    train_eval_df = utils.merge_dfs(train_df, prediction_df)
 
     # for each cluster id, find the most common NER type and assign that to that cluster
     cluster_id_ner_tag_map = {}
@@ -514,7 +505,7 @@ def evaluate_cluster_named_entity(train_documents, train_df, test_documents,
 
     columns = ['Predicted_Phrase', 'Predicted_Entity_Flag', 'Cluster_ID']
     prediction_df = prepare_scored_phrases(candidates, columns=columns)
-    test_eval_df = merge_dfs(test_df, prediction_df)
+    test_eval_df = utils.merge_dfs(test_df, prediction_df)
 
     # assign NER tags and evaluate
     test_eval_df['Predicted_NER_Tag'] = test_eval_df['Cluster_ID'].apply(
@@ -571,11 +562,24 @@ def evaluate_cosine_named_entity(test_documents, test_df, table_directory):
         'Predicted_Phrase', 'Predicted_Entity_Flag', 'Predicted_NER_Tag'
     ]
     prediction_df = prepare_scored_phrases(candidates, columns=columns)
-    test_eval_df = merge_dfs(test_df, prediction_df)
+    test_eval_df = utils.merge_dfs(test_df, prediction_df)
 
     results = evaluate_named_entity_detection(
         test_eval_df,
         scoring_method='CosineNamedEntity',
+        table_directory=table_directory)
+    return results
+
+
+def evaluate_spacy_named_entity(train_df, test_df, table_directory):
+    type_detector = SpacyEntityTypeDetector()
+    # determine the appropriate mappings from OntoNotes to CoNLL-2003
+    train_eval_df = type_detector.fit(train_df)
+    test_eval_df = type_detector.predict(test_df, test_df)
+    # type_detector.evaluate(test_eval_df)
+    results = evaluate_named_entity_detection(
+        test_eval_df,
+        scoring_method='SpacyNamedEntity',
         table_directory=table_directory)
     return results
 
@@ -716,8 +720,11 @@ def main(args):
         #     train_articles, train_df, test_articles, test_df,
         #     named_entity_table_directory)
 
-        evaluate_cosine_named_entity(test_articles, test_df,
-                                     named_entity_table_directory)
+        # evaluate_cosine_named_entity(test_articles, test_df,
+        #                              named_entity_table_directory)
+
+        evaluate_spacy_named_entity(train_df, test_df,
+                                    named_entity_table_directory)
 
 
 if __name__ == '__main__':

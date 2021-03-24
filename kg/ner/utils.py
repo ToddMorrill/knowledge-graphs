@@ -168,3 +168,12 @@ def latex_table(report: dict, file_path: str) -> None:
     df = prepare_report_df(report)
     table_string = generate_table(df)
     save_table(table_string, file_path)
+
+def merge_dfs(df, prediction_df):
+    assert len(df) == len(prediction_df)
+    eval_df = pd.concat((df, prediction_df.reset_index(drop=True)), axis=1)
+    # TODO: why are some CoNLL-2003 tokens NaN?
+    eval_df = eval_df.dropna(subset=['Token'])
+    assert (
+        eval_df['Token'] == eval_df['Predicted_Phrase']).sum() == len(eval_df)
+    return eval_df
