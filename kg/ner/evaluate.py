@@ -19,8 +19,7 @@ from sklearn.metrics import classification_report
 import kg.ner.utils as utils
 from kg.ner.unsupervised import NounPhraseDetector, ProperNounDetector, TFIDFScorer
 from kg.ner.unsupervised import TextRankScorer, ClusterEntityTypeDetector, CosineEntityTypeDetector
-from kg.ner.unsupervised import SpacyEntityTypeDetector
-from kg.ner.supervised import BigramChunker, MaxEntChunker, PretrainedNEDetector
+from kg.ner.supervised import BigramChunker, MaxEntChunker, PretrainedEntityDetector, SpacyEntityTypeDetector
 
 
 def nouns_over_NER(df, noun_col='Chunk_Tag', ner_col='NER_Tag_Normalized'):
@@ -415,7 +414,7 @@ def evaluate_nnp_entity_detection(documents, df, table_directory):
 
 
 def evaluate_pretrained_entity_detector(documents, df, table_directory):
-    pretrained_ne_detector = PretrainedNEDetector(binary=True)
+    pretrained_ne_detector = PretrainedEntityDetector(binary=True)
     candidates = get_candidate_phrases(documents, pretrained_ne_detector)
     prediction_df = prepare_scored_phrases(
         candidates, columns=['Predicted_Phrase', 'Predicted_Entity_Flag'])

@@ -32,6 +32,10 @@ nltk.download('maxent_ne_chunker')  # pretrained NER model
 nltk.download('words')  # used in pretrained NER model
 nltk.download('conll2000')
 from nltk.corpus import conll2000
+import pandas as pd
+from sklearn.metrics import classification_report
+import spacy
+from spacy.tokens import Doc
 
 import kg.ner.utils as utils
 
@@ -185,7 +189,7 @@ class MaxEntChunker(nltk.ChunkParserI):
         return nltk.chunk.conlltags2tree(conlltags)
 
 
-class PretrainedNEDetector(object):
+class PretrainedEntityDetector(object):
     """Pretrained NLTK named entity recognition model"""
     def __init__(self, binary: bool = True) -> None:
         """Initialize the detector.
@@ -246,6 +250,92 @@ class PretrainedNEDetector(object):
         return extractions
 
 
+class SpacyEntityTypeDetector(object):
+    def __init__(self,
+                 entity_type_mapping=None,
+                 model='en_core_web_lg') -> None:
+        self.entity_type_mapping = entity_type_mapping
+        self.nlp = spacy.load(model)
+
+    @staticmethod
+    def prepare_for_spacy(df):
+        sentences = df.groupby([
+            'Article_ID', 'Sentence_ID'
+        ])['Token'].apply(lambda x: [str(y) for y in list(x)])
+        tokenized_articles = sentences.reset_index().groupby(
+            ['Article_ID'])['Token'].apply(list).values.tolist()
+        return tokenized_articles
+
+    def tag_docs(self, tokenized_documents):
+        # accepts list of documents, where each document is a list of tokenized sentences
+        tagged_tokens = []
+        for article in tokenized_documents:
+            # manually create spaCy Doc
+            words = []
+            sent_starts = []
+            for sentence in article:
+                for idx, word in enumerate(sentence):
+                    if idx == 0:
+                        sent_starts.append(True)
+                    else:
+                        sent_starts.append(False)
+                    words.append(word)
+
+            doc = Doc(self.nlp.vocab, words=words, sent_starts=sent_starts)
+            temp_tagged_tokens = []
+            # TODO: is the the best way to do this?
+            for token in self.nlp.get_pipe('ner')(doc):
+                ent_type = token.ent_type_ if token.ent_type_ else 'O'
+                temp_tagged_tokens.append((token.text, ent_type))
+
+            tagged_tokens.extend(temp_tagged_tokens)
+        prediction_df = pd.DataFrame(
+            tagged_tokens, columns=['Predicted_Phrase', 'Predicted_NER_Tag'])
+
+        return prediction_df
+
+    def _normalize_type(self, df):
+        df['Predicted_NER_Tag_Original'] = df['Predicted_NER_Tag']
+        # overwrite with mapping
+        df['Predicted_NER_Tag'] = df['Predicted_NER_Tag'].apply(
+            lambda x: self.entity_type_mapping[x])
+        return df
+
+    def fit(self, train_df):
+        tokenized_docs = self.prepare_for_spacy(train_df)
+        prediction_df = self.tag_docs(tokenized_docs)
+        eval_df = utils.merge_dfs(train_df, prediction_df)
+        eval_df['Predicted_NER_Tag'].value_counts()
+
+        # https://catalog.ldc.upenn.edu/docs/LDC2013T19/OntoNotes-Release-5.0.pdf (page 21)
+        # let the data drive the mapping from predicted NER to CoNLL-2003 tags
+        grouped_data = eval_df.groupby(
+            ['Predicted_NER_Tag',
+             'NER_Tag_Normalized']).agg(Count=('NER_Tag_Normalized', 'count'))
+        mapping_df = grouped_data.loc[grouped_data.groupby(
+            ['Predicted_NER_Tag'])['Count'].idxmax()].reset_index()
+        self.entity_type_mapping = dict(
+            zip(mapping_df['Predicted_NER_Tag'],
+                mapping_df['NER_Tag_Normalized']))
+
+        eval_df = self._normalize_type(eval_df)
+
+        return eval_df
+
+    def predict(self, df, ground_truth_df=None):
+        tokenized_docs = self.prepare_for_spacy(df)
+        prediction_df = self.tag_docs(tokenized_docs)
+        if ground_truth_df is not None:
+            prediction_df = utils.merge_dfs(df, prediction_df)
+        prediction_df = self._normalize_type(prediction_df)
+        return prediction_df
+
+    def evaluate(self, eval_df):
+        print(
+            classification_report(eval_df['NER_Tag_Normalized'],
+                                  eval_df['Entity_Type']))
+
+
 def main(args):
     train_sentences = conll2000.chunked_sents('train.txt', chunk_types=['NP'])
     test_sentences = conll2000.chunked_sents('test.txt', chunk_types=['NP'])
@@ -264,7 +354,7 @@ def main(args):
     articles = train_df.groupby(['Article_ID'], )['Token'].apply(
         lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
 
-    pretrained_ne_detector = PretrainedNEDetector(binary=True)
+    pretrained_ne_detector = PretrainedEntityDetector(binary=True)
     candidates = []
     for article in articles:
         candidates += pretrained_ne_detector.extract(article)
