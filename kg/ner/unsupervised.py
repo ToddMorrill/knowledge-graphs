@@ -33,6 +33,7 @@ import string
 
 import networkx
 import nltk
+from nltk.corpus.reader import tagged
 nltk.download('conll2000')  # noun phrase evaluation
 nltk.download('stopwords')  # stopwords
 from nltk.corpus import conll2000
@@ -43,6 +44,8 @@ import sentence_transformers
 from sentence_transformers import SentenceTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import classification_report
+import spacy
+from spacy.tokens import Doc
 
 import kg.ner.utils as utils
 from kg.ner.cluster import Cluster
@@ -461,14 +464,79 @@ class CosineEntityTypeDetector(object):
         predictions = scores.argmax(dim=1).numpy()
         return predictions
 
+
 def main(args):
     df_dict = utils.load_train_data(args.data_directory)
     train_df = df_dict['train.csv']
     train_df['NER_Tag_Flag'] = train_df['NER_Tag'] != 'O'
 
     # gather up articles
-    articles = train_df.groupby(['Article_ID'], )['Token'].apply(
+    articles = train_df.groupby(['Article_ID'])['Token'].apply(
         lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
+
+    sentences = train_df.groupby(
+        ['Article_ID',
+         'Sentence_ID'])['Token'].apply(lambda x: [str(y) for y in list(x)])
+
+    tokenized_articles = sentences.reset_index().groupby(
+        ['Article_ID'])['Token'].apply(list).values.tolist()
+
+    nlp = spacy.load('en_core_web_lg')
+
+    tagged_tokens = []
+    for article in tokenized_articles:
+        # manually create spaCy Doc
+        words = []
+        sent_starts = []
+        for sentence in article:
+            for idx, word in enumerate(sentence):
+                if idx == 0:
+                    sent_starts.append(True)
+                else:
+                    sent_starts.append(False)
+                words.append(word)
+
+        doc = Doc(nlp.vocab, words=words, sent_starts=sent_starts)
+        temp_tagged_tokens = []
+        for token in nlp.get_pipe('ner')(doc):
+            ent_type = token.ent_type_ if token.ent_type_ else 'O'
+            temp_tagged_tokens.append((token.text, ent_type))
+
+        tagged_tokens.extend(temp_tagged_tokens)
+
+    prediction_df = pd.DataFrame(
+        tagged_tokens, columns=['Predicted_Phrase', 'Predicted_NER_Tag'])
+
+    from kg.ner.evaluate import merge_dfs
+
+    eval_df = merge_dfs(train_df, prediction_df)
+    eval_df['Predicted_NER_Tag'].value_counts()
+    tag_type_mapping = {
+        'O': 'O',
+        'PERSON': 'PER',
+        'ORG': 'ORG',
+        'GPE': 'ORG',
+        'DATE': 'MISC',  # ?
+        'CARDINAL': 'MISC',  # ?
+        'NORP': 'MISC',
+        'MONEY': 'MISC',
+        'QUANTITY': 'MISC',
+        'TIME': 'MISC',
+        'ORDINAL': 'MISC',
+        'PERCENT': 'MISC',
+        'EVENT': 'MISC',
+        'LOC': 'MISC',
+        'WORK_OF_ART': 'MISC',
+        'PRODUCT': 'MISC',
+        'FAC': 'MISC',
+        'LAW': 'MISC',
+        'LANGUAGE': 'MISC'
+    }
+    eval_df['Entity_Type'] = eval_df['Predicted_NER_Tag'].apply(lambda x: tag_type_mapping[x])
+    print(
+        classification_report(eval_df['NER_Tag_Normalized'],
+                                eval_df['Entity_Type']))
+    breakpoint()
 
     chunk_parser = ProperNounDetector()
 
@@ -586,7 +654,6 @@ def main(args):
     cluster.find_k_fit(k_max=80)
     cluster.plot_elbows()
 
-    import pandas as pd
     df = pd.DataFrame(zip(cluster_phrases, cluster.model.labels_),
                       columns=['Phrase', 'Label'])
     for clus in range(cluster.k):

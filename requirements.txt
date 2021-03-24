@@ -12,3 +12,4 @@ nltk
 networkx
 matplotlib
 sentence-transformers
+spacy

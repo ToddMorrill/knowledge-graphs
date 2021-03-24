@@ -567,7 +567,9 @@ def evaluate_cosine_named_entity(test_documents, test_df, table_directory):
         candidates[global_idx[idx]] = (phrase, flag, entity_type)
 
     # split on spaces and compare to ground truth training set
-    columns = ['Predicted_Phrase', 'Predicted_Entity_Flag', 'Predicted_NER_Tag']
+    columns = [
+        'Predicted_Phrase', 'Predicted_Entity_Flag', 'Predicted_NER_Tag'
+    ]
     prediction_df = prepare_scored_phrases(candidates, columns=columns)
     test_eval_df = merge_dfs(test_df, prediction_df)
 
@@ -713,8 +715,9 @@ def main(args):
         # cluster_named_entity_results = evaluate_cluster_named_entity(
         #     train_articles, train_df, test_articles, test_df,
         #     named_entity_table_directory)
-        
-        evaluate_cosine_named_entity(test_articles, test_df, named_entity_table_directory)
+
+        evaluate_cosine_named_entity(test_articles, test_df,
+                                     named_entity_table_directory)
 
 
 if __name__ == '__main__':
