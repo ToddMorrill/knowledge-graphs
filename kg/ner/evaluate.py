@@ -3,10 +3,14 @@
 Examples:
     $ python evaluate.py \
         --data-directory /Users/tmorrill002/Documents/datasets/conll/transformed \
+        --pretrained-directory /Users/tmorrill002/Documents/datasets/conll/model/runs/20210325-172608 \
         --named-entity
 """
 import argparse
 import os
+import pickle
+from types import SimpleNamespace
+import yaml
 
 import matplotlib.pyplot as plt
 import nltk
@@ -15,11 +19,13 @@ import numpy as np
 import pandas as pd
 from sentence_transformers import SentenceTransformer, util
 from sklearn.metrics import classification_report
+import torch
 
 import kg.ner.utils as utils
 from kg.ner.unsupervised import NounPhraseDetector, ProperNounDetector, TFIDFScorer
 from kg.ner.unsupervised import TextRankScorer, ClusterEntityTypeDetector, CosineEntityTypeDetector
 from kg.ner.supervised import BigramChunker, MaxEntChunker, PretrainedEntityDetector, SpacyEntityTypeDetector
+from kg.ner.model import LSTM, get_predictions, translate_predictions
 
 
 def nouns_over_NER(df, noun_col='Chunk_Tag', ner_col='NER_Tag_Normalized'):
@@ -583,6 +589,54 @@ def evaluate_spacy_named_entity(train_df, test_df, table_directory):
     return results
 
 
+def evaluate_custom_named_entity(pretrained_directory, sentences, test_df,
+                                 table_directory):
+    #TODO: abstract a lot of this away
+
+    # reload the preprocessor
+    preprocessor_file_path = os.path.join(pretrained_directory,
+                                          'preprocessor.pickle')
+    with open(preprocessor_file_path, 'rb') as f:
+        preprocessor = pickle.load(f)
+
+    # reload the config file
+    config_file_path = os.path.join(pretrained_directory, 'config.yaml')
+    with open(config_file_path, 'r') as f:
+        config = yaml.load(f)
+    config = SimpleNamespace(**config)
+
+    # reload the model
+    model_file_path = os.path.join(pretrained_directory, 'model.pt')
+    state = torch.load(model_file_path)
+    model = LSTM(config)
+    model.load_state_dict(state['model'])
+
+    prepared_sentences = preprocessor.preprocess(sentences)
+    sample_output = model(prepared_sentences)
+    sample_predictions = get_predictions(sample_output,
+                                         lengths=prepared_sentences[1],
+                                         concatenate=False)
+    preds = translate_predictions(sample_predictions,
+                                  preprocessor.idx_to_label)
+    final_preds = []
+    for pred in preds:
+        final_preds.extend(pred)
+
+    tokens = []
+    for sentence in sentences:
+        tokens.extend(sentence.split(' '))
+
+    prediction_df = pd.DataFrame(zip(tokens, final_preds),
+                                 columns=['Predicted_Phrase', 'Predicted_NER_Tag'])
+
+    test_eval_df = utils.merge_dfs(test_df, prediction_df)
+    results = evaluate_named_entity_detection(
+        test_eval_df,
+        scoring_method='CustomNamedEntity',
+        table_directory=table_directory)
+    return results
+
+
 def plot_precision_recall(results,
                           scoring_method='TFIDF',
                           image_directory=None):
@@ -722,8 +776,14 @@ def main(args):
         # evaluate_cosine_named_entity(test_articles, test_df,
         #                              named_entity_table_directory)
 
-        evaluate_spacy_named_entity(train_df, test_df,
-                                    named_entity_table_directory)
+        # evaluate_spacy_named_entity(train_df, test_df,
+        #                             named_entity_table_directory)
+
+        test_sentences = test_df.groupby(
+            ['Article_ID', 'Sentence_ID'])['Token'].apply(
+                lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
+        evaluate_custom_named_entity(args.pretrained_directory, test_sentences,
+                                     test_df, named_entity_table_directory)
 
 
 if __name__ == '__main__':
@@ -732,6 +792,10 @@ if __name__ == '__main__':
         '--data-directory',
         type=str,
         help='Directory where train, validation, and test data are stored.')
+    parser.add_argument(
+        '--pretrained-directory',
+        type=str,
+        help='Directory where a pretrained NER model is stored.')
     parser.add_argument('--eda',
                         help='If flag passed, run EDA code.',
                         action='store_true')

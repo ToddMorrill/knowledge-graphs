@@ -8,7 +8,6 @@ import argparse
 from types import SimpleNamespace
 
 import torch
-from torch._C import T, dtype
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.sparse import Embedding

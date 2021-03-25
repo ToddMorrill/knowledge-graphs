@@ -6,9 +6,9 @@ Examples:
         --config configs/baseline.yaml
 
 Current supervised results (token level evaluation):
-Macro average precision: 0.80
+Macro average precision: 0.83
 Macro average recall: 0.67
-Macro F1: 0.72
+Macro F1: 0.74
 """
 import argparse
 import os
@@ -141,7 +141,7 @@ def train(model: torch.nn.Module, dataloaders: tuple, optimizer: torch.optim,
     best_val_loss = float('inf')
     for i in range(1, config.epochs + 1):
         print(f'Epoch number: {i}')
-        model, optimizer = train_epoch(model, i, train_dataloader, optimizer)
+        model, optimizer = train_epoch(model, train_dataloader, optimizer)
         val_loss = evaluate(model, val_dataloader, 'Validation')
 
         # stopping and saving criterion
@@ -208,7 +208,7 @@ def main(args):
     # save the config file
     config_file_path = os.path.join(config.run_dir, 'config.yaml')
     with open(config_file_path, 'w') as f:
-        yaml.dump(config, f)
+        yaml.dump(vars(config), f)
 
     # sample prediction with reloaded model
     model_file_path = os.path.join(config.run_dir, 'model.pt')
