@@ -769,15 +769,15 @@ def main(args):
         test_articles = test_df.groupby(['Article_ID'], )['Token'].apply(
             lambda x: ' '.join([str(y) for y in list(x)])).values.tolist()
 
-        # cluster_named_entity_results = evaluate_cluster_named_entity(
-        #     train_articles, train_df, test_articles, test_df,
-        #     named_entity_table_directory)
+        cluster_named_entity_results = evaluate_cluster_named_entity(
+            train_articles, train_df, test_articles, test_df,
+            named_entity_table_directory)
 
-        # evaluate_cosine_named_entity(test_articles, test_df,
-        #                              named_entity_table_directory)
+        evaluate_cosine_named_entity(test_articles, test_df,
+                                     named_entity_table_directory)
 
-        # evaluate_spacy_named_entity(train_df, test_df,
-        #                             named_entity_table_directory)
+        evaluate_spacy_named_entity(train_df, test_df,
+                                    named_entity_table_directory)
 
         test_sentences = test_df.groupby(
             ['Article_ID', 'Sentence_ID'])['Token'].apply(

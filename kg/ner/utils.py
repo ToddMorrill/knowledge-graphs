@@ -1,6 +1,7 @@
 import os
 
 import nltk
+
 nltk.download('punkt')  # word tokenizer
 nltk.download('averaged_perceptron_tagger')  # pos tagger
 import pandas as pd
@@ -102,7 +103,9 @@ def prepare_report_df(report: dict) -> pd.DataFrame:
     df.index.name = 'Class'
     df = df.reset_index()
     df.columns = [x.title() for x in df.columns]
-    df['Class'] = df['Class'].apply(lambda x: x.title())
+    # only title case the metrics
+    df['Class'] = df['Class'].apply(
+        lambda x: x.title() if x in ['macro avg', 'weighted avg'] else x)
     # remove column name
     df = df.rename(columns={'Class': ''})
     df['Support'] = df['Support'].astype(int)
@@ -168,6 +171,7 @@ def latex_table(report: dict, file_path: str) -> None:
     df = prepare_report_df(report)
     table_string = generate_table(df)
     save_table(table_string, file_path)
+
 
 def merge_dfs(df, prediction_df):
     assert len(df) == len(prediction_df)
