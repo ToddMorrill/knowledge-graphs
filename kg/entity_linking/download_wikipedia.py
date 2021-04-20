@@ -107,7 +107,7 @@ class DownloadWikifile(object):
             if sha1_local != meta['sha1']:
                 # will need to download
                 print(f'Corrupt: {file}')
-                os.remove('file')
+                os.remove(target_file)
             else:
                 print(f'Exists: {file}')
                 return 'already downloaded'
@@ -174,9 +174,6 @@ class DownloadWikifile(object):
         end = time.time()
         duration = end - start
         print(f'Total time taken to download Wikipedia: {utils.hms_string(duration)}.')
-
-        results
-        results    
 
 
 if __name__ == '__main__':
