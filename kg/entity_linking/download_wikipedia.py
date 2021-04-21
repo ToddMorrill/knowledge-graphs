@@ -150,25 +150,33 @@ class DownloadWikifile(object):
             args_list.append((file, meta, target_path))
         
         # try to download in parallel
-        # with 5 processes you may get throttled with
-        # HTTP Error 503: Service Temporarily Unavailable 
-        with Pool(5) as p:
+        # with 5 processes you will get throttled
+        # HTTP Error 503: Service Temporarily Unavailable
+        with Pool(2) as p:
             while args_list:
-                results = p.starmap(self.download_file, args_list)
-                
-                # check results to determine any files were throttled
+                results = []
+
+                # treat args_list like a fifo queue
+                # apply_async and stagger with sleep to avoid API throttling
+                for args in args_list:
+                    time.sleep(1)
+                    # save the future result
+                    results.append(p.apply_async(self.download_file, args=args))
+
+                # check results to determine if any files were throttled
                 remaining_files = []
-                for idx, result in enumerate(results):
+                for idx, future in enumerate(results):
+                    result = future.get()
                     if result == 'already downloaded':
                        continue
-                    # if the save path is returned, all good
+                    # if the save path is returned, it was processed correctly
                     elif result[0] == os.path.join(target_path, args_list[idx][0]):
                         continue
-                    # continue processing
+                    # reprocess if there was an error 
                     else:
                         remaining_files.append(args_list[idx])
                 
-                # try to reprocess
+                # reprocess
                 args_list = remaining_files
         
         end = time.time()
