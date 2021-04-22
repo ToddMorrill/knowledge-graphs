@@ -32,6 +32,7 @@ class WikiDump(object):
 
     def get_wikidumps_available(self):
         # gathers all links found on this page: https://dumps.wikimedia.org/enwiki/
+        # TODO: swap this out for requests library
         index = urllib.request.urlopen(self.wiki_url).read()
         soup_index = BeautifulSoup(index, 'html.parser')
         # Find the links on the page

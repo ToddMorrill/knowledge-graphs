@@ -6,7 +6,6 @@
 Examples:
     $ python extract_wikipedia.py
 """
-
 import bz2
 import glob
 import multiprocessing as mp
@@ -17,7 +16,7 @@ import traceback
 import xml.etree.ElementTree as etree
 
 from kg.entity_linking import utils
-from kg.entity_linking.process_wikipedia import ProcessPages
+from kg.entity_linking.process_wikipedia import ProcessPagesWorker
 
 WORKER_REPORT = 1000
 ENTIRE_TASK_REPORT = 100000
@@ -321,9 +320,16 @@ class ExtractWikipedia(object):
 
 if __name__ == '__main__':
     save_dir = '/Users/tmorrill002/Documents/datasets/wikipedia'
-    wiki = ExtractWikipedia(
-        path=save_dir,  # Location you downloaded Wikipedia to
-        payload=ProcessPages(
-            save_dir)  # where you want the extracted Wikipedia files to go
-    )
-    wiki.process()
+    # test extractor on a single file
+
+    # wiki = ExtractWikipedia(
+    #     path=save_dir,  # Location you downloaded Wikipedia to
+    #     payload=ProcessPages(
+    #         save_dir)  # where you want the extracted Wikipedia files to go
+    # )
+    # wiki.process()
+
+    output_queue = mp.Queue(QUEUE_SIZE)
+    worker = ProcessPagesWorker(output_queue, config=None)
+    extractor = ExtractWikipediaFile(worker)
+    extractor.extract_file()
