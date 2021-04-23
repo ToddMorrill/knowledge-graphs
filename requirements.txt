@@ -17,3 +17,4 @@ spacy
 allennlp==2.1.0
 allennlp-models==2.1.0
 beautifulsoup4
+mwparserfromhell
