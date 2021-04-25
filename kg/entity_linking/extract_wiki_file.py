@@ -1,5 +1,6 @@
 import bz2
 from collections import defaultdict, Counter
+import multiprocessing as mp
 import os
 import xml.etree.ElementTree as etree
 
@@ -152,10 +153,39 @@ class LinkExtractor(object):
         return anchor_to_entities
 
 
+def process_page(extractor_queue, page_queue):
+    # TODO: what happens when you call get on an empty queue?
+    extractor = extractor_queue.get()
+    page = extractor.get_page()
+    # if there are still pages to be processed, add the extractor back to the queue
+    if page:
+        extractor_queue.put(extractor)
+        page_queue.put(page)
+
+
+
 if __name__ == '__main__':
     wiki_dir = '/Users/tmorrill002/Documents/datasets/wikipedia/20210401/'
     files = os.listdir(wiki_dir)
+    files = [os.path.join(wiki_dir, file) for file in files]
+    
     # filter out index files
+    files = [file for file in files if 'index' not in file]
+
+    # add extractor to queue for each file
+    # should be low memory
+    extractor_queue = mp.Queue()
+    for file in files[:2]:
+        extractor = WikiFileExtractor(file)
+        extractor_queue.put(extractor)
+    
+    # TODO: create a pool of workers, but test this using one worker for starters
+    # keep memory footprint low by limiting queue size
+    page_queue = mp.Queue(maxsize=50)
+    process_page(extractor_queue, page_queue)
+    breakpoint()
+
+
     
     
     # Sample code to test 1 file
