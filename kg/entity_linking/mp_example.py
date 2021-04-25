@@ -5,6 +5,9 @@ def producer(input_queue, output_queue):
     while True:
         work_item = input_queue.get()
         if work_item is None:
+            # pass this information along to the other producers
+            input_queue.put(None)
+            
             # notify the consumers that one of the producers exited
             output_queue.put(None)
             print('Producer exiting')
@@ -44,9 +47,9 @@ if __name__ == '__main__':
         input_queue.put(list(range(rand_length)))
         expected += rand_length
 
-    for _ in range(n_producers):
-        # each worker should read one sentinel value and exit
-        input_queue.put(None)
+    # add sentinel value to the queue (to be shared among the processes)
+    # when the producer sees the sentinel value, it should exit
+    input_queue.put(None)        
 
     n_consumers = 16
     producers_exited = mp.Value('i', 0)
