@@ -1,6 +1,5 @@
 import multiprocessing as mp
 import random
-import time
 
 def producer(input_queue, output_queue):
     while True:
@@ -14,16 +13,12 @@ def producer(input_queue, output_queue):
             output_queue.put(item)
 
 
-def consumer(output_queue, producers_exited):
-    # probably best to use a while True loop explicitly
-    # look for sentinel value and return
+def consumer(output_queue, final_queue, producers_exited):
     while True:
         with producers_exited.get_lock():
             # if no more input expected and the queue is empty, exit process
             if producers_exited.value == 16:
-                try:
-                    work_item = output_queue.get(timeout=1)
-                except:
+                if output_queue.empty():
                     print('Consumer exiting')
                     return None
             else:
@@ -34,7 +29,8 @@ def consumer(output_queue, producers_exited):
                     producers_exited.value += 1
                     continue
 
-                print(work_item)
+        # do work, NB: must be outside with context to get true parallelism
+        final_queue.put(work_item)
 
 
 if __name__ == '__main__':
@@ -42,9 +38,11 @@ if __name__ == '__main__':
     input_queue = mp.Queue()
     # add some random lists to the input queue
     num_lists = 100
+    expected = 0
     for _ in range(num_lists):
         rand_length = random.randrange(start=100, stop=200)
         input_queue.put(list(range(rand_length)))
+        expected += rand_length
 
     for _ in range(n_producers):
         # each worker should read one sentinel value and exit
@@ -62,22 +60,32 @@ if __name__ == '__main__':
         p.name = f'producer-process-{i}'
         producer_processes.append(p)
     
-    time.sleep(2)
-    
+    # simply used to verify everything finished
+    final_queue = mp.Queue()
+
     # start consumer processes
     consumer_processes = []
     for i in range(n_consumers):
-        p = mp.Process(target=consumer, args=(output_queue, producers_exited))
+        p = mp.Process(target=consumer, args=(output_queue, final_queue, producers_exited))
         p.start()
         p.name = f'consumer-process-{i}'
         consumer_processes.append(p)
     
     for p in producer_processes:
         p.join()
-    
+
+    # must inspect this before trying to join the consumer process o/w main process will hang
+    # https://stackoverflow.com/questions/56321756/multiprocessing-queue-with-hugh-data-causes-wait-for-tstate-lock
+    # https://docs.python.org/3.5/library/multiprocessing.html#pipes-and-queues
+    results = []
+    while not final_queue.empty():
+        results.append(final_queue.get())
+    assert expected == len(results)
+
     for p in consumer_processes:
         p.join()
 
     input_queue.close()
     output_queue.close()
+    final_queue.close()
 
