@@ -5,9 +5,6 @@ def producer(input_queue, output_queue):
     while True:
         work_item = input_queue.get()
         if work_item is None:
-            # pass this information along to the other producers
-            input_queue.put(None)
-            
             # notify the consumers that one of the producers exited
             output_queue.put(None)
             print('Producer exiting')

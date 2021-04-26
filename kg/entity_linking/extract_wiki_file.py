@@ -1,7 +1,14 @@
+"""This module processes files from the Wikipedia dump in parallel and counts of anchor texts to entities from Wikipedia links.
+
+Examples:
+    $ python extract_wiki_file.py
+"""
 import bz2
 from collections import defaultdict, Counter
+import json
 import multiprocessing as mp
 import os
+import time
 import xml.etree.ElementTree as etree
 
 import mwparserfromhell
@@ -10,25 +17,25 @@ from kg.entity_linking import utils
 
 
 class WikiFileExtractor(object):
-    """**Overview of the parsing process:**
-    1) etree.iterparse incrementally builds up the XML tree one line at a time
-    2) the root node stores children nodes underneath it, which correspond to wikipedia pages
-    3) the 'start' event corresponds to an opening tag (e.g. \<page\>) and the 'end' event corresponds to a closing tag (e.g. \</page\>)
-    4) the elem.text method gathers all text between the start and end of the element, which is built up incrementally as more lines are parsed
-    5) the root is cleared once a page is parsed so that there is only one child node under the root at a time (keeps memory footprint low)
+    """Overview of the parsing process:
+        1) etree.iterparse incrementally builds up the XML tree one line at a time
+        2) the root node stores children nodes underneath it, which correspond to wikipedia pages
+        3) the 'start' event corresponds to an opening tag (e.g. <page>) and the 'end' event corresponds to a closing tag (e.g. </page>)
+        4) the elem.text method gathers all text between the start and end of the element, which is built up incrementally as more lines are parsed
+        5) the root is cleared once a page is parsed so that there is only one child node under the root at a time (keeps memory footprint low)
     """
     def __init__(self, file_path) -> None:
         self.file_path = file_path
         self.context, self.root = self._get_context(file_path)
 
     def _get_context(self, file_path):
-        # open the compressed file
-        fp = bz2.BZ2File(file_path, 'r')
+        # open the compressed file (close in get_page)
+        self.fp = bz2.BZ2File(file_path, 'r')
 
         # handles first element in the iteration, which is later cleared to
         # avoid persisting everything in memory
         # get an iterable
-        context = etree.iterparse(fp, events=("start", "end"))
+        context = etree.iterparse(self.fp, events=("start", "end"))
 
         # turn it into an iterator
         context = iter(context)
@@ -63,7 +70,8 @@ class WikiFileExtractor(object):
                     # read one complete page
                     return extracted_content
 
-        # if nothing left to iterate on, return None
+        # if nothing left to iterate on, close file, return None
+        self.fp.close()
         return None
 
 
@@ -146,68 +154,258 @@ class LinkExtractor(object):
         # result will look like:
         # 'Carl Levy': Counter({'Carl Levy (political scientist)': 1})
         # 'capitalism': Counter({'Anarchism and capitalism': 2, 'capitalism': 1})
-        entity_anchor_pairs = self._get_entity_anchor_pairs(page)
+        entity_anchor_pairs = self._get_entity_anchor_pairs()
         for entity, anchor in entity_anchor_pairs:
             anchor_to_entities[anchor][entity] += 1
 
         return anchor_to_entities
 
+    @staticmethod
+    def save_json(dictionary, file_path):
+        with open(file_path, 'w') as f:
+            json.dump(dictionary, f)
 
-def process_page(extractor_queue, page_queue):
-    # TODO: what happens when you call get on an empty queue?
-    extractor = extractor_queue.get()
-    page = extractor.get_page()
-    # if there are still pages to be processed, add the extractor back to the queue
-    if page:
-        extractor_queue.put(extractor)
-        page_queue.put(page)
+    @staticmethod
+    def load_json(file_path):
+        with open(file_path, 'r') as f:
+            dictionary = json.load(f)
+        return dictionary
+
+    def get_json_filename(self):
+        # use title for file name
+        # replace spaces with underscores
+        title_underscores = self.page['title'].replace(' ', '_')
+        # replace slashes with double_underscores
+        title_underscores = title_underscores.replace('/', '__')
+        return f'{title_underscores}.json'
+
+    @staticmethod
+    def combine_dicts(dict_one, dict_two):
+        for key in dict_two:
+            if key in dict_one:
+                dict_one[key].update(dict_two[key])
+            else:
+                dict_one[key] = dict_two[key]
+        return dict_one
 
 
+def page_extractor(infile_queue, page_queue):
+    while True:
+        file = infile_queue.get()
+        if file is None:
+            # notify the consumers that one of the producers exited
+            page_queue.put(None)
+            print('Page extractor exiting.')
+            return None
 
-if __name__ == '__main__':
-    wiki_dir = '/Users/tmorrill002/Documents/datasets/wikipedia/20210401/'
+        # process the file, extract all pages
+        extractor = WikiFileExtractor(file)
+        while True:
+            page = extractor.get_page()
+            # if file exhausted, no pages left to process, move on to next file
+            if page is None:
+                break
+            # o/w put the page onto the queue for further processing
+            page_queue.put(page)
+
+
+def link_extractor(page_queue, output_queue, page_extractors_exited,
+                   page_extractor_count):
+    while True:
+        with page_extractors_exited.get_lock():
+            # if no more input expected and the queue is empty, exit process
+            if page_extractors_exited.value == page_extractor_count:
+                if page_queue.empty():
+                    # notify downstream consumers that one of the consumers exited
+                    output_queue.put(None)
+                    print('Link extractor exiting')
+                    return None
+            else:
+                page = page_queue.get()
+                if page is None:
+                    # a producer process exited
+                    page_extractors_exited.value += 1
+                    continue
+
+        # do work, NB: must be outside with context to get true parallelism
+        extractor = LinkExtractor(page)
+        links_dict = extractor.extract_links()
+        filename = extractor.get_json_filename()
+        output_queue.put((filename, links_dict))
+
+
+def saver(output_queue, outfile_queue, link_extractors_exited,
+          link_extractor_count, save_dir):
+    while True:
+        with link_extractors_exited.get_lock():
+            # if no more input expected and the queue is empty, exit process
+            if link_extractors_exited.value == link_extractor_count:
+                if output_queue.empty():
+                    # notify downstream consumers that one of the workers exited
+                    outfile_queue.put(None)
+                    print('Saver exiting.')
+                    return None
+            else:
+                item = output_queue.get()
+                if item is None:
+                    # a producer process exited
+                    link_extractors_exited.value += 1
+                    continue
+
+        # do work, NB: must be outside with context to get true parallelism
+        filename, links_dict = item
+        save_file_path = os.path.join(save_dir, filename)
+
+        # TODO: consider reducing all these dictionaries to a single dict before writing to disk
+
+        LinkExtractor.save_json(links_dict, save_file_path)
+        outfile_queue.put(save_file_path)
+
+
+def list_files(wiki_dir):
     files = os.listdir(wiki_dir)
     files = [os.path.join(wiki_dir, file) for file in files]
-    
+
     # filter out index files
     files = [file for file in files if 'index' not in file]
 
-    # add extractor to queue for each file
-    # should be low memory
-    extractor_queue = mp.Queue()
-    for file in files[:2]:
-        extractor = WikiFileExtractor(file)
-        extractor_queue.put(extractor)
-    
-    # TODO: create a pool of workers, but test this using one worker for starters
-    # keep memory footprint low by limiting queue size
-    page_queue = mp.Queue(maxsize=50)
-    process_page(extractor_queue, page_queue)
+    return files
+
+
+def get_queue(initial_items=[], sentinel_items=[], maxsize=0):
+    """maxsize=0 means there is no limit on the size."""
+    queue = mp.Queue(maxsize=maxsize)
+    for item in initial_items:
+        queue.put(item)
+    for item in sentinel_items:
+        queue.put(item)
+    return queue
+
+
+def process_one_file(file_path):
+    """This function takes ~0:28:28 to complete and ~5Gb of memory, whereas the
+    parallel version takes ~0:07:32."""
+    start = time.time()
+    wiki_file_extractor = WikiFileExtractor(file_path)
+    pages = []
+    while True:
+        page = wiki_file_extractor.get_page()
+        # if file exhausted, no pages left to process, move on to next file
+        if page is None:
+            break
+        # o/w put the page onto the queue for further processing
+        pages.append(page)
+
+    link_dicts = []
+    for page in pages:
+        link_extractor = LinkExtractor(page)
+        link_dict = link_extractor.extract_links()
+        link_dicts.append(link_dict)
+
+    for dict_ in link_dicts:
+        item = dict_
+
+    end = time.time()
+    duration = end - start
+    print(f'Time to process one file: {utils.hms_string(duration)}')
+
+
+if __name__ == '__main__':
+
+    PAGE_EXTRACTOR_COUNT = mp.cpu_count()
+    LINK_EXTRACTOR_COUNT = mp.cpu_count()
+    SAVER_COUNT = mp.cpu_count()
+    PAGE_QUEUE_MAXSIZE = 10_000  # 10k pages in memory at once
+    OUTPUT_QUEUE_MAXSIZE = 100_000  # 100k dictionaries in memory at once
+
+    wiki_dir = '/Users/tmorrill002/Documents/datasets/wikipedia/20210401/'
+
+    # create output folder for all the links
+    save_dir = os.path.join(wiki_dir, 'links_20210401')
+    os.makedirs(save_dir, exist_ok=True)
+
+    # get wikidump files
+    files = list_files(wiki_dir)
+
+    process_one_file(files[0])
     breakpoint()
 
+    # add sentinel values to the queue
+    # when the producer sees the sentinel value, it should exit
+    page_extractor_sentinels = [None] * PAGE_EXTRACTOR_COUNT
+    # test pipeline with first file
+    infile_queue = get_queue(initial_items=files[:1],
+                             sentinel_items=page_extractor_sentinels)
 
-    
-    
-    # Sample code to test 1 file
+    # keep memory footprint low by limiting queue size
+    page_queue = get_queue(maxsize=PAGE_QUEUE_MAXSIZE)
 
-    # wiki_dir = '/Users/tmorrill002/Documents/datasets/wikipedia/'
-    # file = 'enwiki-20210401-pages-articles-multistream1.xml-p1p41242.bz2'
-    # file_path = os.path.join(wiki_dir, file)
+    # get output_queue
+    output_queue = get_queue(maxsize=OUTPUT_QUEUE_MAXSIZE)
 
-    # wiki_file_extractor = WikiFileExtractor(file_path)
+    # get outfile_queue
+    outfile_queue = get_queue()
 
-    # page_count = 0
-    # page = True
-    # while page:
-    #     page = wiki_file_extractor.get_page()
-    #     page_count += 1
-    #     # TODO: this is where the page should be put into a queue for more processing
-    #     # queue.put(page)
+    # keep track of how many workers are running
+    page_extractors_exited = mp.Value('i', 0)
+    link_extractors_exited = mp.Value('i', 0)
 
-    # print(page_count)
+    # start page_extractor processes
+    # TODO: abstract to function
+    page_extractor_processes = []
+    for i in range(PAGE_EXTRACTOR_COUNT):
+        p = mp.Process(target=page_extractor, args=(infile_queue, page_queue))
+        p.start()
+        p.name = f'page-extractor-{i}'
+        page_extractor_processes.append(p)
 
-    # # this is where we should pop from the queue to process a page
-    # # queue.get(page)
-    # link_extractor = LinkExtractor(page)
-    # link_dict = link_extractor.extract_links()
+    # start link_extractor processes
+    link_extractor_processes = []
+    for i in range(LINK_EXTRACTOR_COUNT):
+        p = mp.Process(target=link_extractor,
+                       args=(
+                           page_queue,
+                           output_queue,
+                           page_extractors_exited,
+                           PAGE_EXTRACTOR_COUNT,
+                       ))
+        p.start()
+        p.name = f'link-extractor-{i}'
+        link_extractor_processes.append(p)
 
+    # start saver processes
+    saver_processes = []
+    for i in range(SAVER_COUNT):
+        p = mp.Process(target=saver,
+                       args=(output_queue, outfile_queue,
+                             link_extractors_exited, LINK_EXTRACTOR_COUNT,
+                             save_dir))
+        p.start()
+        p.name = f'saver-{i}'
+        saver_processes.append(p)
+
+    # examine outfile_queue
+    print(outfile_queue.get())
+
+    savers_exited = []
+    while True:
+        if len(savers_exited) == SAVER_COUNT:
+            if outfile_queue.empty():
+                break
+        item = page_queue.get()
+        if item is None:
+            savers_exited.append(item)
+
+    for p in page_extractor_processes:
+        p.join()
+
+    for p in link_extractor_processes:
+        p.join()
+
+    for p in saver_processes:
+        p.join()
+
+    infile_queue.close()
+    page_queue.close()
+    output_queue.close()
+    outfile_queue.close()
