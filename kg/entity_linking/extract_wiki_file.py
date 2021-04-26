@@ -8,7 +8,10 @@ from collections import defaultdict, Counter
 import json
 import multiprocessing as mp
 import os
+import shutil
+import sys
 import time
+import uuid
 import xml.etree.ElementTree as etree
 
 import mwparserfromhell
@@ -41,7 +44,12 @@ class WikiFileExtractor(object):
         context = iter(context)
 
         # get the root element
-        event, root = next(context)
+        try:
+            event, root = next(context)
+        except Exception as e:
+            # was getting errors around OSError: Invalid data stream
+            print(f'Error opening {file_path}')
+            context, root = [], None
         return context, root
 
     def get_page(self):
@@ -199,14 +207,26 @@ def page_extractor(infile_queue, page_queue):
             return None
 
         # process the file, extract all pages
+        # TODO: extract chunks of pages to reduce process overhead
         extractor = WikiFileExtractor(file)
+        counter = 0
+        pages_batch = []
         while True:
+            # put 1000 pages into the queue at a time to reduce inter-process communication overhead
+            if counter == 1000:
+                # put the pages onto the queue for further processing
+                page_queue.put(pages_batch)
+                pages_batch = []
+                counter = 0
             page = extractor.get_page()
             # if file exhausted, no pages left to process, move on to next file
             if page is None:
+                # first put the partial batch onto the queue
+                if len(pages_batch) > 0:
+                    page_queue.put(pages_batch)
                 break
-            # o/w put the page onto the queue for further processing
-            page_queue.put(page)
+            pages_batch.append(page)
+            counter += 1
 
 
 def link_extractor(page_queue, output_queue, page_extractors_exited,
@@ -221,57 +241,94 @@ def link_extractor(page_queue, output_queue, page_extractors_exited,
                     print('Link extractor exiting')
                     return None
             else:
-                page = page_queue.get()
-                if page is None:
+                pages_batch = page_queue.get()
+                if pages_batch is None:
                     # a producer process exited
                     page_extractors_exited.value += 1
                     continue
 
         # do work, NB: must be outside with context to get true parallelism
-        extractor = LinkExtractor(page)
-        links_dict = extractor.extract_links()
-        filename = extractor.get_json_filename()
-        output_queue.put((filename, links_dict))
+        # unpack all the pages in the batch
+        links_dict_batch = []
+        for page in pages_batch:
+            extractor = LinkExtractor(page)
+            links_dict = extractor.extract_links()
+            filename = extractor.get_json_filename()
+            links_dict_batch.append((filename, links_dict))
+
+        output_queue.put(links_dict_batch)
+
+
+def save_partial_dict(save_dir, temp_dict):
+    file_id = uuid.uuid4().hex[:8]
+    file_name = f'partition_{file_id}.json'
+    save_file_path = os.path.join(save_dir, file_name)
+    # TODO: handle these exceptions better (related to file names not being UTF-8)
+    # these errors were taking down the saver processes and deadlocking the system
+    try:
+        LinkExtractor.save_json(temp_dict, save_file_path)
+    except Exception as e:
+        print(f'Error saving {save_file_path}.')
+    return save_file_path
 
 
 def saver(output_queue, outfile_queue, link_extractors_exited,
           link_extractor_count, save_dir):
+    counter = 0
+    temp_dict = defaultdict(Counter)
     while True:
+        # save new dictionary every 100_000 pages to reduce number of small files
+        # ~50Mb files
+        if counter >= 100_000:
+            # save existing dictionary and create a new one
+            save_file_path = save_partial_dict(save_dir, temp_dict)
+            outfile_queue.put(save_file_path)
+
+            # new dict, reset counter
+            temp_dict = defaultdict(Counter)
+            counter = 0
+
+        # get item from queue
         with link_extractors_exited.get_lock():
             # if no more input expected and the queue is empty, exit process
             if link_extractors_exited.value == link_extractor_count:
                 if output_queue.empty():
+                    # save any final dictionaries currently being processed
+                    if len(temp_dict) > 0:
+                        save_file_path = save_partial_dict(save_dir, temp_dict)
+                        outfile_queue.put(save_file_path)
+
                     # notify downstream consumers that one of the workers exited
                     outfile_queue.put(None)
                     print('Saver exiting.')
                     return None
             else:
-                item = output_queue.get()
-                if item is None:
+                links_dict_batch = output_queue.get()
+                if links_dict_batch is None:
                     # a producer process exited
                     link_extractors_exited.value += 1
                     continue
 
         # do work, NB: must be outside with context to get true parallelism
-        filename, links_dict = item
-        save_file_path = os.path.join(save_dir, filename)
-
-        # TODO: consider reducing all these dictionaries to a single dict before writing to disk
-        # TODO: handle these exceptions better (related to file names not being UTF-8)
-        # these errors were taking down the saver processes and deadlocking the system
-        try:
-            LinkExtractor.save_json(links_dict, save_file_path)
-        except Exception as e:
-            print(f'Error saving {save_file_path}.')
-        outfile_queue.put(save_file_path)
+        for pagename, links_dict in links_dict_batch:
+            temp_dict = LinkExtractor.combine_dicts(temp_dict, links_dict)
+            counter += 1
 
 
 def list_files(wiki_dir):
     files = os.listdir(wiki_dir)
+    # TODO: combine into one loop
+
     files = [os.path.join(wiki_dir, file) for file in files]
+
+    # filter out directories
+    files = [file for file in files if os.path.isfile(file)]
 
     # filter out index files
     files = [file for file in files if 'index' not in file]
+
+    # remove .DS_Store files
+    files = [file for file in files if '.DS_Store' not in file]
 
     return files
 
@@ -313,30 +370,155 @@ def process_one_file(file_path):
     duration = end - start
     print(f'Time to process one file: {utils.hms_string(duration)}')
 
+from itertools import chain
+from collections import deque
+
+def total_size(o, handlers={}, verbose=False):
+    """ Returns the approximate memory footprint an object and all of its contents.
+
+    Automatically finds the contents of the following builtin containers and
+    their subclasses:  tuple, list, deque, dict, set and frozenset.
+    To search other containers, add handlers to iterate over their contents:
+
+        handlers = {SomeContainerClass: iter,
+                    OtherContainerClass: OtherContainerClass.get_elements}
+
+    """
+    dict_handler = lambda d: chain.from_iterable(d.items())
+    all_handlers = {tuple: iter,
+                    list: iter,
+                    deque: iter,
+                    dict: dict_handler,
+                    set: iter,
+                    frozenset: iter,
+                   }
+    all_handlers.update(handlers)     # user handlers take precedence
+    seen = set()                      # track which object id's have already been seen
+    default_size = sys.getsizeof(0)       # estimate sizeof object without __sizeof__
+
+    def sizeof(o):
+        if id(o) in seen:       # do not double count the same object
+            return 0
+        seen.add(id(o))
+        s = sys.getsizeof(o, default_size)
+
+        if verbose:
+            print(s, type(o), repr(o), file=sys.stderr)
+
+        for typ, handler in all_handlers.items():
+            if isinstance(o, typ):
+                s += sum(map(sizeof, handler(o)))
+                break
+        return s
+
+    return sizeof(o)
 
 if __name__ == '__main__':
+
+    # # test time/memory to extract 1000 pages
+    
+    # wiki_dir = '/Users/tmorrill002/Documents/datasets/wikipedia/'
+    # file = 'enwiki-20210401-pages-articles-multistream1.xml-p1p41242.bz2'
+    # file_path = os.path.join(wiki_dir, file)
+    # import psutil
+    # process = psutil.Process(os.getpid())
+    # start_size = process.memory_info().rss  # in bytes 
+    # print(f'Starting process memory size: {start_size / float(2**20):,.2f}')
+    
+    # start = time.time()
+    # wiki_file_extractor = WikiFileExtractor(file_path)
+    # pages = []
+    # for _ in range(1000):
+    #     page = wiki_file_extractor.get_page()
+    #     pages.append(page)
+    # end = time.time()
+    # extract_pages_duration = end - start
+    # print(f'Time to extract 1,000 pages: {utils.hms_string(extract_pages_duration)}')
+
+    # # pages_size = sys.getsizeof(pages)
+    # # pages_size = total_size(pages)
+    # plus_pages_size = process.memory_info().rss
+    # pages_size = plus_pages_size - start_size 
+    # print(f'Size of 1,000 pages: {pages_size / float(2**20):,.2f} Mb')
+
+    # # test time/memory to extract links from 1000 pages
+    # start = time.time()
+    # link_dicts = []
+    # for page in pages:
+    #     link_extractor = LinkExtractor(page)
+    #     link_dict = link_extractor.extract_links()
+    #     link_dicts.append(link_dict)
+    # end = time.time()
+    # extract_links_duration = end - start
+    # print(f'Time to extract links from 1,000 pages: {utils.hms_string(extract_links_duration)}')
+
+    # # link_dicts_size = sys.getsizeof(link_dicts)
+    # # link_dicts_size = total_size(link_dicts)
+    # plus_link_dicts_size = process.memory_info().rss
+    # link_dicts_size = plus_link_dicts_size - plus_pages_size 
+    # print(f'Size of 1,000 pages worth of links: {link_dicts_size / float(2**20):,.2f} Mb')
+
+    # # test time/memory to update a dictionary built from 1000 pages
+    # start = time.time()
+    # temp_dict = defaultdict(Counter)
+    # for link_dict in link_dicts:
+    #     temp_dict = LinkExtractor.combine_dicts(temp_dict, link_dict)
+    # end = time.time()
+    # combine_dicts_duration = end - start
+    # print(f'Time to combine 1,000 dictionaries: {utils.hms_string(combine_dicts_duration)}')
+
+    # plus_combine_dicts_size = process.memory_info().rss
+    # combined_dict_size = plus_combine_dicts_size - plus_link_dicts_size     
+    # print(f'Size of dict for 1,000 pages worth of links: {combined_dict_size / float(2**20):,.2f} Mb')
+
+    # # I want to keep the maximize throughput while keeping the whole application under 16Gb of memory
+    # # want to find the right pages_queue_size
+    # memory_budget_mb = 16000 
+    # one_k_pages_mb = 75
+    # one_k_links_dict_mb = 69
+    # one_hundred_k_links_dict_mb = 10*100
+    # processes = 16
+    # page_queue_maxsize = 1
+    # pages_mb = one_k_pages_mb * processes
+    # links_dict_mb = one_k_links_dict_mb * processes
+    # combined_dict_mb = one_hundred_k_links_dict_mb * 2
+
+    # budget_remaining_for_queue = memory_budget_mb - pages_mb - links_dict_mb - combined_dict_mb
+    # page_queue_size = budget_remaining_for_queue / one_k_pages_mb
+    # print(f'Approx. page queue size: {page_queue_size}')
+    # # how many batches of 1,000 among 6m documents
+    # batches = 6_000_000 / 1_000
+    # compute_time_secs = (extract_links_duration * batches) / processes
+    # print(f'Approx. time to compute the job: {utils.hms_string(compute_time_secs)}')
+    # # ~155.9 for the page_queue_size
+    # exit(0)
+
     start = time.time()
 
     PAGE_EXTRACTOR_COUNT = mp.cpu_count()
     LINK_EXTRACTOR_COUNT = mp.cpu_count()
-    SAVER_COUNT = mp.cpu_count()
-    PAGE_QUEUE_MAXSIZE = 0  # capped at 32768 ~5Gb worth of pages
+    SAVER_COUNT = 2
+    PAGE_QUEUE_MAXSIZE = 100  
     OUTPUT_QUEUE_MAXSIZE = 0  # capped at 32768
 
     wiki_dir = '/Users/tmorrill002/Documents/datasets/wikipedia/20210401/'
 
     # create output folder for all the links
-    save_dir = os.path.join(wiki_dir, 'links_20210401')
+    save_dir = '/Users/tmorrill002/Documents/datasets/wikipedia/links_20210401'
+    # if dir already there, need to remove (filenames are unique and files will be additive)
+    if os.path.isdir(save_dir):
+        shutil.rmtree(save_dir)
     os.makedirs(save_dir, exist_ok=True)
 
-    # get wikidump files
+    # get wikidump files (test with 1 file)
     files = list_files(wiki_dir)
+    print(f'Processing {len(files)} Wikipedia dump files.')
 
     # add sentinel values to the queue
     # when the producer sees the sentinel value, it should exit
     page_extractor_sentinels = [None] * PAGE_EXTRACTOR_COUNT
     # test pipeline with first file
-    infile_queue = get_queue(initial_items=files[:1],
+    infile_queue = get_queue(initial_items=files,
                              sentinel_items=page_extractor_sentinels)
 
     # keep memory footprint low by limiting queue size
@@ -388,10 +570,10 @@ if __name__ == '__main__':
     #         # combine dictionaries
     #         filename, links_dict = item
     #         master_dict = LinkExtractor.combine_dicts(master_dict, links_dict)
-    
+
     # out_file_path = os.path.join(save_dir, 'dictionary_file_1.json')
     # LinkExtractor.save_json(master_dict, out_file_path)
-    
+
     # start saver processes
     saver_processes = []
     for i in range(SAVER_COUNT):
@@ -420,7 +602,7 @@ if __name__ == '__main__':
 
     for p in link_extractor_processes:
         p.join()
-    
+
     for p in saver_processes:
         p.join()
 
