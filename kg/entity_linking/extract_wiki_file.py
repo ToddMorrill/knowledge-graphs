@@ -258,7 +258,10 @@ def saver(output_queue, outfile_queue, link_extractors_exited,
 
         # TODO: consider reducing all these dictionaries to a single dict before writing to disk
 
-        LinkExtractor.save_json(links_dict, save_file_path)
+        try:
+            LinkExtractor.save_json(links_dict, save_file_path)
+        except Exception as e:
+            print(f'Error saving {save_file_path}.')
         outfile_queue.put(save_file_path)
 
 
@@ -311,12 +314,13 @@ def process_one_file(file_path):
 
 
 if __name__ == '__main__':
+    start = time.time()
 
     PAGE_EXTRACTOR_COUNT = mp.cpu_count()
     LINK_EXTRACTOR_COUNT = mp.cpu_count()
     SAVER_COUNT = mp.cpu_count()
-    PAGE_QUEUE_MAXSIZE = 10_000  # 10k pages in memory at once
-    OUTPUT_QUEUE_MAXSIZE = 100_000  # 100k dictionaries in memory at once
+    PAGE_QUEUE_MAXSIZE = 0  # capped at 32768 ~5Gb worth of pages
+    OUTPUT_QUEUE_MAXSIZE = 0  # capped at 32768
 
     wiki_dir = '/Users/tmorrill002/Documents/datasets/wikipedia/20210401/'
 
@@ -326,9 +330,6 @@ if __name__ == '__main__':
 
     # get wikidump files
     files = list_files(wiki_dir)
-
-    process_one_file(files[0])
-    breakpoint()
 
     # add sentinel values to the queue
     # when the producer sees the sentinel value, it should exit
@@ -344,7 +345,7 @@ if __name__ == '__main__':
     output_queue = get_queue(maxsize=OUTPUT_QUEUE_MAXSIZE)
 
     # get outfile_queue
-    outfile_queue = get_queue()
+    # outfile_queue = get_queue()
 
     # keep track of how many workers are running
     page_extractors_exited = mp.Value('i', 0)
@@ -373,39 +374,60 @@ if __name__ == '__main__':
         p.name = f'link-extractor-{i}'
         link_extractor_processes.append(p)
 
-    # start saver processes
-    saver_processes = []
-    for i in range(SAVER_COUNT):
-        p = mp.Process(target=saver,
-                       args=(output_queue, outfile_queue,
-                             link_extractors_exited, LINK_EXTRACTOR_COUNT,
-                             save_dir))
-        p.start()
-        p.name = f'saver-{i}'
-        saver_processes.append(p)
-
-    # examine outfile_queue
-    print(outfile_queue.get())
-
-    savers_exited = []
+    # combine everything into one dictionary
+    master_dict = defaultdict(Counter)
     while True:
-        if len(savers_exited) == SAVER_COUNT:
-            if outfile_queue.empty():
+        if link_extractors_exited.value == LINK_EXTRACTOR_COUNT:
+            if output_queue.empty():
                 break
-        item = page_queue.get()
+        item = output_queue.get()
         if item is None:
-            savers_exited.append(item)
+            link_extractors_exited.value += 1
+        else:
+            # combine dictionaries
+            filename, links_dict = item
+            master_dict = LinkExtractor.combine_dicts(master_dict, links_dict)
+    
+    out_file_path = os.path.join(save_dir, 'dictionary_file_1.json')
+    LinkExtractor.save_json(master_dict, out_file_path)
+    
+    # start saver processes
+    # saver_processes = []
+    # for i in range(SAVER_COUNT):
+    #     p = mp.Process(target=saver,
+    #                    args=(output_queue, outfile_queue,
+    #                          link_extractors_exited, LINK_EXTRACTOR_COUNT,
+    #                          save_dir))
+    #     p.start()
+    #     p.name = f'saver-{i}'
+    #     saver_processes.append(p)
+
+    # savers_exited = []
+    # while True:
+    #     if len(savers_exited) == SAVER_COUNT:
+    #         if outfile_queue.empty():
+    #             break
+    #     item = outfile_queue.get()
+    #     if item is None:
+    #         savers_exited.append(item)
+
+    assert output_queue.empty()
+    assert link_extractors_exited.value == LINK_EXTRACTOR_COUNT
 
     for p in page_extractor_processes:
         p.join()
 
     for p in link_extractor_processes:
         p.join()
-
-    for p in saver_processes:
-        p.join()
+    
+    # for p in saver_processes:
+    #     p.join()
 
     infile_queue.close()
     page_queue.close()
     output_queue.close()
-    outfile_queue.close()
+    # outfile_queue.close()
+
+    end = time.time()
+    duration = end - start
+    print(f'Total run time: {utils.hms_string(duration)}')
