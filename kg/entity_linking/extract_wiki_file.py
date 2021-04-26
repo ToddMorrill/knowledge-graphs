@@ -257,7 +257,8 @@ def saver(output_queue, outfile_queue, link_extractors_exited,
         save_file_path = os.path.join(save_dir, filename)
 
         # TODO: consider reducing all these dictionaries to a single dict before writing to disk
-
+        # TODO: handle these exceptions better (related to file names not being UTF-8)
+        # these errors were taking down the saver processes and deadlocking the system
         try:
             LinkExtractor.save_json(links_dict, save_file_path)
         except Exception as e:
@@ -345,7 +346,7 @@ if __name__ == '__main__':
     output_queue = get_queue(maxsize=OUTPUT_QUEUE_MAXSIZE)
 
     # get outfile_queue
-    # outfile_queue = get_queue()
+    outfile_queue = get_queue()
 
     # keep track of how many workers are running
     page_extractors_exited = mp.Value('i', 0)
@@ -374,45 +375,45 @@ if __name__ == '__main__':
         p.name = f'link-extractor-{i}'
         link_extractor_processes.append(p)
 
-    # combine everything into one dictionary
-    master_dict = defaultdict(Counter)
-    while True:
-        if link_extractors_exited.value == LINK_EXTRACTOR_COUNT:
-            if output_queue.empty():
-                break
-        item = output_queue.get()
-        if item is None:
-            link_extractors_exited.value += 1
-        else:
-            # combine dictionaries
-            filename, links_dict = item
-            master_dict = LinkExtractor.combine_dicts(master_dict, links_dict)
+    # # combine everything into one dictionary
+    # master_dict = defaultdict(Counter)
+    # while True:
+    #     if link_extractors_exited.value == LINK_EXTRACTOR_COUNT:
+    #         if output_queue.empty():
+    #             break
+    #     item = output_queue.get()
+    #     if item is None:
+    #         link_extractors_exited.value += 1
+    #     else:
+    #         # combine dictionaries
+    #         filename, links_dict = item
+    #         master_dict = LinkExtractor.combine_dicts(master_dict, links_dict)
     
-    out_file_path = os.path.join(save_dir, 'dictionary_file_1.json')
-    LinkExtractor.save_json(master_dict, out_file_path)
+    # out_file_path = os.path.join(save_dir, 'dictionary_file_1.json')
+    # LinkExtractor.save_json(master_dict, out_file_path)
     
     # start saver processes
-    # saver_processes = []
-    # for i in range(SAVER_COUNT):
-    #     p = mp.Process(target=saver,
-    #                    args=(output_queue, outfile_queue,
-    #                          link_extractors_exited, LINK_EXTRACTOR_COUNT,
-    #                          save_dir))
-    #     p.start()
-    #     p.name = f'saver-{i}'
-    #     saver_processes.append(p)
+    saver_processes = []
+    for i in range(SAVER_COUNT):
+        p = mp.Process(target=saver,
+                       args=(output_queue, outfile_queue,
+                             link_extractors_exited, LINK_EXTRACTOR_COUNT,
+                             save_dir))
+        p.start()
+        p.name = f'saver-{i}'
+        saver_processes.append(p)
 
-    # savers_exited = []
-    # while True:
-    #     if len(savers_exited) == SAVER_COUNT:
-    #         if outfile_queue.empty():
-    #             break
-    #     item = outfile_queue.get()
-    #     if item is None:
-    #         savers_exited.append(item)
+    savers_exited = []
+    while True:
+        if len(savers_exited) == SAVER_COUNT:
+            if outfile_queue.empty():
+                break
+        item = outfile_queue.get()
+        if item is None:
+            savers_exited.append(item)
 
-    assert output_queue.empty()
-    assert link_extractors_exited.value == LINK_EXTRACTOR_COUNT
+    assert outfile_queue.empty()
+    assert len(savers_exited) == SAVER_COUNT
 
     for p in page_extractor_processes:
         p.join()
@@ -420,13 +421,13 @@ if __name__ == '__main__':
     for p in link_extractor_processes:
         p.join()
     
-    # for p in saver_processes:
-    #     p.join()
+    for p in saver_processes:
+        p.join()
 
     infile_queue.close()
     page_queue.close()
     output_queue.close()
-    # outfile_queue.close()
+    outfile_queue.close()
 
     end = time.time()
     duration = end - start
