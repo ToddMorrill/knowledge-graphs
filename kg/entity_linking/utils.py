@@ -19,7 +19,7 @@ def hms_string(sec_elapsed: int) -> str:
 
 
 def strip_tag_name(t):
-    idx = k = t.rfind("}")
+    idx = t.rfind("}")
     if idx != -1:
         t = t[idx + 1:]
     return t
