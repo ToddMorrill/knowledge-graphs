@@ -3,6 +3,12 @@
 
 Examples:
     $ python extract_wikipedia.py
+
+TODO:
+    - argparse
+    - overhaul parallel processing pipeline
+    - review function to process a single file (or a sample of pages) for testing
+    - add more tests
 """
 import argparse
 import bz2

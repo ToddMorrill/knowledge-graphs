@@ -258,6 +258,9 @@ class WikiDumpDownloader(object):
             f'Total time taken to download Wikipedia: {utils.hms_string(duration)}.'
         )
 
+        # TODO: should really run through all the files one final time to be
+        # sure the SHA1 digests meet expecations
+
 
 def main(args):
     # wd = WikiDump()

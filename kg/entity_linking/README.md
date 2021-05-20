@@ -3,4 +3,6 @@ The following steps were taken to download and extract all anchor text statistic
 ```
 python download_wikipedia.py \
     --save-dir /Users/tmorrill002/Documents/datasets/wikipedia
+
+python extract_wikipedia.py
 ```
