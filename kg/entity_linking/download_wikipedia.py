@@ -189,6 +189,11 @@ class WikiDumpDownloader(object):
     def download(self, save_dir: str) -> None:
         """Downloads the articles multistream dump from Wikipedia.
 
+        A download of the complete dump (5/20/21) on an ~100Mb/s internet
+          connection takes the following times:
+            - Using 2 processes: 0:35:45.73
+            - Using 1 process: 1:07:18.20
+
         Args:
             save_dir (str): Local directory where the downloads will be saved.
         """
@@ -255,6 +260,9 @@ class WikiDumpDownloader(object):
 
 
 def main(args):
+    # wd = WikiDump()
+    # print(wd.get_latest_dump())
+
     downloader = WikiDumpDownloader(wiki_date=args.wiki_date)
     downloader.download(args.save_dir)
 
