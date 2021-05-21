@@ -11,7 +11,7 @@ from collections import Counter, defaultdict
 import os
 import time
 
-from kg.entity_linking.extract_wiki_file import LinkExtractor
+from kg.entity_linking.extract_wikipedia import LinkExtractor
 from kg.entity_linking import utils
 
 if __name__ == '__main__':

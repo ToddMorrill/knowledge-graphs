@@ -13,6 +13,8 @@ TODO:
 import argparse
 import bz2
 from collections import defaultdict, Counter
+from itertools import chain
+from collections import deque
 import json
 import multiprocessing as mp
 import os
@@ -477,10 +479,6 @@ def process_one_file(file_path):
     print(f'Time to process one file: {utils.hms_string(duration)}')
 
 
-from itertools import chain
-from collections import deque
-
-
 def total_size(o, handlers={}, verbose=False):
     """ Returns the approximate memory footprint an object and all of its contents.
 
@@ -524,85 +522,24 @@ def total_size(o, handlers={}, verbose=False):
     return sizeof(o)
 
 
+def main(args):
+    pass
+
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--save-dir',
+        help=('Optional directory where the downloaded Wikipedia dump will be',
+              'saved. Defaults to current directory.'),
+        default='.')
+    parser.add_argument(
+        '--wiki-date',
+        help=
+        ('Optional Wikidump date (e.g. 20210401) to download. If not passed,',
+         ' the module will download the most recent Wikidump.'))
+    args = parser.parse_args()
 
-    # # test time/memory to extract 1000 pages
-
-    # wiki_dir = '/Users/tmorrill002/Documents/datasets/wikipedia/'
-    # file = 'enwiki-20210401-pages-articles-multistream1.xml-p1p41242.bz2'
-    # file_path = os.path.join(wiki_dir, file)
-    # import psutil
-    # process = psutil.Process(os.getpid())
-    # start_size = process.memory_info().rss  # in bytes
-    # print(f'Starting process memory size: {start_size / float(2**20):,.2f}')
-
-    # start = time.time()
-    # wiki_file_extractor = WikiFileExtractor(file_path)
-    # pages = []
-    # for _ in range(1000):
-    #     page = wiki_file_extractor.get_page()
-    #     pages.append(page)
-    # end = time.time()
-    # extract_pages_duration = end - start
-    # print(f'Time to extract 1,000 pages: {utils.hms_string(extract_pages_duration)}')
-
-    # # pages_size = sys.getsizeof(pages)
-    # # pages_size = total_size(pages)
-    # plus_pages_size = process.memory_info().rss
-    # pages_size = plus_pages_size - start_size
-    # print(f'Size of 1,000 pages: {pages_size / float(2**20):,.2f} Mb')
-
-    # # test time/memory to extract links from 1000 pages
-    # start = time.time()
-    # link_dicts = []
-    # for page in pages:
-    #     link_extractor = LinkExtractor(page)
-    #     link_dict = link_extractor.extract_links()
-    #     link_dicts.append(link_dict)
-    # end = time.time()
-    # extract_links_duration = end - start
-    # print(f'Time to extract links from 1,000 pages: {utils.hms_string(extract_links_duration)}')
-
-    # # link_dicts_size = sys.getsizeof(link_dicts)
-    # # link_dicts_size = total_size(link_dicts)
-    # plus_link_dicts_size = process.memory_info().rss
-    # link_dicts_size = plus_link_dicts_size - plus_pages_size
-    # print(f'Size of 1,000 pages worth of links: {link_dicts_size / float(2**20):,.2f} Mb')
-
-    # # test time/memory to update a dictionary built from 1000 pages
-    # start = time.time()
-    # temp_dict = defaultdict(Counter)
-    # for link_dict in link_dicts:
-    #     temp_dict = LinkExtractor.combine_dicts(temp_dict, link_dict)
-    # end = time.time()
-    # combine_dicts_duration = end - start
-    # print(f'Time to combine 1,000 dictionaries: {utils.hms_string(combine_dicts_duration)}')
-
-    # plus_combine_dicts_size = process.memory_info().rss
-    # combined_dict_size = plus_combine_dicts_size - plus_link_dicts_size
-    # print(f'Size of dict for 1,000 pages worth of links: {combined_dict_size / float(2**20):,.2f} Mb')
-
-    # # I want to keep the maximize throughput while keeping the whole application under 16Gb of memory
-    # # want to find the right pages_queue_size
-    # memory_budget_mb = 16000
-    # one_k_pages_mb = 75
-    # one_k_links_dict_mb = 69
-    # one_hundred_k_links_dict_mb = 10*100
-    # processes = 16
-    # page_queue_maxsize = 1
-    # pages_mb = one_k_pages_mb * processes
-    # links_dict_mb = one_k_links_dict_mb * processes
-    # combined_dict_mb = one_hundred_k_links_dict_mb * 2
-
-    # budget_remaining_for_queue = memory_budget_mb - pages_mb - links_dict_mb - combined_dict_mb
-    # page_queue_size = budget_remaining_for_queue / one_k_pages_mb
-    # print(f'Approx. page queue size: {page_queue_size}')
-    # # how many batches of 1,000 among 6m documents
-    # batches = 6_000_000 / 1_000
-    # compute_time_secs = (extract_links_duration * batches) / processes
-    # print(f'Approx. time to compute the job: {utils.hms_string(compute_time_secs)}')
-    # # ~155.9 for the page_queue_size
-    # exit(0)
+    main(args)
 
     start = time.time()
 
