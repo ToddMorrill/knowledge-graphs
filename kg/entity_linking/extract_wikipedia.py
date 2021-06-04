@@ -2,31 +2,25 @@
   mappings of anchor texts to entities derived from Wikipedia links.
 
 Examples:
-    $ python extract_wikipedia.py
-
-TODO:
-    - argparse
-    - overhaul parallel processing pipeline
-    - review function to process a single file (or a sample of pages) for testing
-    - add more tests
+    $ python extract_wikipedia.py \
+        --wiki-dir /Users/tmorrill002/Documents/datasets/wikipedia/20210401/ \
+        --save-dir /Users/tmorrill002/Documents/datasets/wikipedia/links_20210401 \
+        --config extract_wikipedia.yaml
 """
 import argparse
 import bz2
 from collections import defaultdict, Counter
-from itertools import chain
-from collections import deque
 import json
 import multiprocessing as mp
 import os
 import re
-import shutil
-import sys
 import time
 from typing import Union
 import uuid
 import xml.etree.ElementTree as etree
 
 import mwparserfromhell
+import yaml
 
 from kg.entity_linking import utils
 
@@ -304,8 +298,34 @@ class LinkExtractor(object):
                 dict_one[key] = dict_two[key]
         return dict_one
 
+    @staticmethod
+    def save_partial_dict(save_dir: str, partial_dict: dict) -> str:
+        """This function saves a sharded JSON file."""
+        # create a unique filename for the partition
+        file_id = uuid.uuid4().hex[:8]
+        file_name = f'partition_{file_id}.json'
+        save_file_path = os.path.join(save_dir, file_name)
+        # TODO: handle these exceptions better (related to file names not being UTF-8)
+        # these errors were taking down the saver processes and deadlocking the system
+        try:
+            LinkExtractor.save_json(partial_dict, save_file_path)
+        except Exception as e:
+            print(f'Error saving {save_file_path}.')
+        return save_file_path
 
-def page_extractor(infile_queue, page_queue):
+
+def page_extractor(infile_queue: mp.Queue, page_queue: mp.Queue,
+                   config: dict[str, int]) -> None:
+    """Worker function that extracts 1000 pages from a saved Wikipedia file at
+      a time and moves the results to the page_queue.
+
+    Args:
+        infile_queue (mp.Queue): Queue of Wikipedia files to be processed.
+        page_queue (mp.Queue): Queue of individual Wikipedia pages to be 
+          further processed.
+        config (dict[str, int]): Dictionary of parameters configuring the 
+          extraction job.
+    """
     while True:
         file = infile_queue.get()
         if file is None:
@@ -320,8 +340,9 @@ def page_extractor(infile_queue, page_queue):
         counter = 0
         pages_batch = []
         while True:
-            # put 1000 pages into the queue at a time to reduce inter-process communication overhead
-            if counter == 1000:
+            # put multiple pages into the queue at a time to reduce
+            # inter-process communication overhead
+            if counter == config['num_pages_batch_size']:
                 # put the pages onto the queue for further processing
                 page_queue.put(pages_batch)
                 pages_batch = []
@@ -329,7 +350,7 @@ def page_extractor(infile_queue, page_queue):
             page = extractor.get_page()
             # if file exhausted, no pages left to process, move on to next file
             if page is None:
-                # first put the partial batch onto the queue
+                # put the partial batch onto the queue
                 if len(pages_batch) > 0:
                     page_queue.put(pages_batch)
                 break
@@ -337,12 +358,31 @@ def page_extractor(infile_queue, page_queue):
             counter += 1
 
 
-def link_extractor(page_queue, output_queue, page_extractors_exited,
-                   page_extractor_count):
+def link_extractor(page_queue: mp.Queue, output_queue: mp.Queue,
+                   page_extractors_exited: mp.Value,
+                   config: dict[str, int]) -> None:
+    """Worker function that extracts links from the Wikipedia pages and moves
+      the results to the output_queue.
+    
+      This worker exits when all expected paged_extractor workers have exited 
+      (i.e. no more items will be put into the queue) and the page_queue is
+      empty.
+
+    Args:
+        page_queue (mp.Queue): Queue of individual Wikipedia pages to be 
+          further processed.
+        output_queue (mp.Queue): Queue containing dictionaries that will be
+          batched together and saved to sharded JSON files.
+        page_extractors_exited (mp.Value): Number of page extractor workers
+          exited.
+        config (dict[str, int]): Dictionary of parameters configuring the 
+          extraction job.
+    """
     while True:
         with page_extractors_exited.get_lock():
             # if no more input expected and the queue is empty, exit process
-            if page_extractors_exited.value == page_extractor_count:
+            if page_extractors_exited.value == config[
+                    'page_extractor_workers']:
                 if page_queue.empty():
                     # notify downstream consumers that one of the consumers exited
                     output_queue.put(None)
@@ -362,34 +402,36 @@ def link_extractor(page_queue, output_queue, page_extractors_exited,
             extractor = LinkExtractor(page)
             links_dict = extractor.extract_links()
             filename = extractor.get_json_filename()
+            # TODO: remove filename from being passed
             links_dict_batch.append((filename, links_dict))
 
         output_queue.put(links_dict_batch)
 
 
-def save_partial_dict(save_dir, temp_dict):
-    file_id = uuid.uuid4().hex[:8]
-    file_name = f'partition_{file_id}.json'
-    save_file_path = os.path.join(save_dir, file_name)
-    # TODO: handle these exceptions better (related to file names not being UTF-8)
-    # these errors were taking down the saver processes and deadlocking the system
-    try:
-        LinkExtractor.save_json(temp_dict, save_file_path)
-    except Exception as e:
-        print(f'Error saving {save_file_path}.')
-    return save_file_path
+def saver(output_queue: mp.Queue, outfile_queue: mp.Queue,
+          link_extractors_exited: mp.Value, config: dict[str, int]) -> None:
+    """Worker function that batches dictionaries of surface forms into
+      a JSON file with 100,000 pages worth of links.
 
-
-def saver(output_queue, outfile_queue, link_extractors_exited,
-          link_extractor_count, save_dir):
+    Args:
+        output_queue (mp.Queue): Queue containing dictionaries that will be
+          batched together and saved to sharded JSON files.
+        outfile_queue (mp.Queue): Queue containing file paths for all the saved
+          JSON files.
+        link_extractors_exited (mp.Value): Number of link extractor workers
+          exited.
+        config (dict[str, int]): Dictionary of parameters configuring the 
+          extraction job.
+    """
     counter = 0
     temp_dict = defaultdict(Counter)
     while True:
         # save new dictionary every 100_000 pages to reduce number of small files
         # ~50Mb files
-        if counter >= 100_000:
+        if counter >= config['num_pages_in_json']:
             # save existing dictionary and create a new one
-            save_file_path = save_partial_dict(save_dir, temp_dict)
+            save_file_path = LinkExtractor.save_partial_dict(
+                config['save_dir'], temp_dict)
             outfile_queue.put(save_file_path)
 
             # new dict, reset counter
@@ -399,11 +441,13 @@ def saver(output_queue, outfile_queue, link_extractors_exited,
         # get item from queue
         with link_extractors_exited.get_lock():
             # if no more input expected and the queue is empty, exit process
-            if link_extractors_exited.value == link_extractor_count:
+            if link_extractors_exited.value == config[
+                    'link_extractor_workers']:
                 if output_queue.empty():
                     # save any final dictionaries currently being processed
                     if len(temp_dict) > 0:
-                        save_file_path = save_partial_dict(save_dir, temp_dict)
+                        save_file_path = LinkExtractor.save_partial_dict(
+                            config['save_dir'], temp_dict)
                         outfile_queue.put(save_file_path)
 
                     # notify downstream consumers that one of the workers exited
@@ -423,37 +467,14 @@ def saver(output_queue, outfile_queue, link_extractors_exited,
             counter += 1
 
 
-def list_files(wiki_dir):
-    files = os.listdir(wiki_dir)
-    # TODO: combine into one loop
+def process_one_file(file_path: str) -> None:
+    """Function to test the time and memory usage required to process 1 
+      Wikipedia dump file. This function takes ~0:28:28 to complete and ~5Gb of
+      memory, whereas the parallel version takes ~0:07:32.
 
-    files = [os.path.join(wiki_dir, file) for file in files]
-
-    # filter out directories
-    files = [file for file in files if os.path.isfile(file)]
-
-    # filter out index files
-    files = [file for file in files if 'index' not in file]
-
-    # remove .DS_Store files
-    files = [file for file in files if '.DS_Store' not in file]
-
-    return files
-
-
-def get_queue(initial_items=[], sentinel_items=[], maxsize=0):
-    """maxsize=0 means there is no limit on the size."""
-    queue = mp.Queue(maxsize=maxsize)
-    for item in initial_items:
-        queue.put(item)
-    for item in sentinel_items:
-        queue.put(item)
-    return queue
-
-
-def process_one_file(file_path):
-    """This function takes ~0:28:28 to complete and ~5Gb of memory, whereas the
-    parallel version takes ~0:07:32."""
+    Args:
+        file_path (str): File path for 1 Wikipedia dump file.
+    """
     start = time.time()
     wiki_file_extractor = WikiFileExtractor(file_path)
     pages = []
@@ -471,171 +492,85 @@ def process_one_file(file_path):
         link_dict = link_extractor.extract_links()
         link_dicts.append(link_dict)
 
-    for dict_ in link_dicts:
-        item = dict_
+    # TODO: to truly simulate the complete job, should combine dictionaries
+    # and save to disk
 
     end = time.time()
     duration = end - start
     print(f'Time to process one file: {utils.hms_string(duration)}')
 
 
-def total_size(o, handlers={}, verbose=False):
-    """ Returns the approximate memory footprint an object and all of its contents.
-
-    Automatically finds the contents of the following builtin containers and
-    their subclasses:  tuple, list, deque, dict, set and frozenset.
-    To search other containers, add handlers to iterate over their contents:
-
-        handlers = {SomeContainerClass: iter,
-                    OtherContainerClass: OtherContainerClass.get_elements}
-
-    """
-    dict_handler = lambda d: chain.from_iterable(d.items())
-    all_handlers = {
-        tuple: iter,
-        list: iter,
-        deque: iter,
-        dict: dict_handler,
-        set: iter,
-        frozenset: iter,
-    }
-    all_handlers.update(handlers)  # user handlers take precedence
-    seen = set()  # track which object id's have already been seen
-    default_size = sys.getsizeof(
-        0)  # estimate sizeof object without __sizeof__
-
-    def sizeof(o):
-        if id(o) in seen:  # do not double count the same object
-            return 0
-        seen.add(id(o))
-        s = sys.getsizeof(o, default_size)
-
-        if verbose:
-            print(s, type(o), repr(o), file=sys.stderr)
-
-        for typ, handler in all_handlers.items():
-            if isinstance(o, typ):
-                s += sum(map(sizeof, handler(o)))
-                break
-        return s
-
-    return sizeof(o)
-
-
 def main(args):
-    pass
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '--save-dir',
-        help=('Optional directory where the downloaded Wikipedia dump will be',
-              'saved. Defaults to current directory.'),
-        default='.')
-    parser.add_argument(
-        '--wiki-date',
-        help=
-        ('Optional Wikidump date (e.g. 20210401) to download. If not passed,',
-         ' the module will download the most recent Wikidump.'))
-    args = parser.parse_args()
-
-    main(args)
-
     start = time.time()
 
-    PAGE_EXTRACTOR_COUNT = mp.cpu_count()
-    LINK_EXTRACTOR_COUNT = mp.cpu_count()
-    SAVER_COUNT = 2
-    PAGE_QUEUE_MAXSIZE = 100
-    OUTPUT_QUEUE_MAXSIZE = 0  # capped at 32768
+    # configure the application parameters
+    with open(args.config) as f:
+        config = yaml.safe_load(f)
 
-    wiki_dir = '/Users/tmorrill002/Documents/datasets/wikipedia/20210401/'
-
-    # create output folder for all the links
-    save_dir = '/Users/tmorrill002/Documents/datasets/wikipedia/links_20210401'
-    # if dir already there, need to remove (filenames are unique and files will be additive)
-    if os.path.isdir(save_dir):
-        shutil.rmtree(save_dir)
-    os.makedirs(save_dir, exist_ok=True)
+    if config['page_extractor_workers'] == -1:
+        config['page_extractor_workers'] = mp.cpu_count()
+    if config['link_extractor_workers'] == -1:
+        config['link_extractor_workers'] = mp.cpu_count()
 
     # get wikidump files (test with 1 file)
-    files = list_files(wiki_dir)
+    files = utils.list_wiki_files(args.wiki_dir)
     print(f'Processing {len(files)} Wikipedia dump files.')
+
+    # create the save directory
+    utils.create_folder(args.save_dir, remove_existing=True)
+    # add save_dir to config dict for later use
+    config['save_dir'] = args.save_dir
 
     # add sentinel values to the queue
     # when the producer sees the sentinel value, it should exit
-    page_extractor_sentinels = [None] * PAGE_EXTRACTOR_COUNT
-    # test pipeline with first file
-    infile_queue = get_queue(initial_items=files,
-                             sentinel_items=page_extractor_sentinels)
+    page_extractor_sentinels = [None] * config['page_extractor_workers']
+    infile_queue = utils.get_queue(initial_items=files,
+                                   sentinel_items=page_extractor_sentinels)
 
     # keep memory footprint low by limiting queue size
-    page_queue = get_queue(maxsize=PAGE_QUEUE_MAXSIZE)
+    page_queue = utils.get_queue(maxsize=config['page_queue_maxsize'])
 
     # get output_queue
-    output_queue = get_queue(maxsize=OUTPUT_QUEUE_MAXSIZE)
+    output_queue = utils.get_queue(maxsize=config['output_queue_maxsize'])
 
     # get outfile_queue
-    outfile_queue = get_queue()
+    outfile_queue = utils.get_queue()
 
     # keep track of how many workers are running
     page_extractors_exited = mp.Value('i', 0)
     link_extractors_exited = mp.Value('i', 0)
 
     # start page_extractor processes
-    # TODO: abstract to function
-    page_extractor_processes = []
-    for i in range(PAGE_EXTRACTOR_COUNT):
-        p = mp.Process(target=page_extractor, args=(infile_queue, page_queue))
-        p.start()
-        p.name = f'page-extractor-{i}'
-        page_extractor_processes.append(p)
+    page_extractor_processes = utils.start_workers(
+        config['page_extractor_workers'],
+        page_extractor,
+        args=(infile_queue, page_queue, config),
+        name='page-extractor')
 
     # start link_extractor processes
-    link_extractor_processes = []
-    for i in range(LINK_EXTRACTOR_COUNT):
-        p = mp.Process(target=link_extractor,
-                       args=(
-                           page_queue,
-                           output_queue,
-                           page_extractors_exited,
-                           PAGE_EXTRACTOR_COUNT,
-                       ))
-        p.start()
-        p.name = f'link-extractor-{i}'
-        link_extractor_processes.append(p)
-
-    # # combine everything into one dictionary
-    # master_dict = defaultdict(Counter)
-    # while True:
-    #     if link_extractors_exited.value == LINK_EXTRACTOR_COUNT:
-    #         if output_queue.empty():
-    #             break
-    #     item = output_queue.get()
-    #     if item is None:
-    #         link_extractors_exited.value += 1
-    #     else:
-    #         # combine dictionaries
-    #         filename, links_dict = item
-    #         master_dict = LinkExtractor.combine_dicts(master_dict, links_dict)
-
-    # out_file_path = os.path.join(save_dir, 'dictionary_file_1.json')
-    # LinkExtractor.save_json(master_dict, out_file_path)
+    link_extractor_processes = utils.start_workers(
+        config['link_extractor_workers'],
+        link_extractor,
+        args=(
+            page_queue,
+            output_queue,
+            page_extractors_exited,
+            config,
+        ),
+        name='link-extractor')
 
     # start saver processes
-    saver_processes = []
-    for i in range(SAVER_COUNT):
-        p = mp.Process(target=saver,
-                       args=(output_queue, outfile_queue,
-                             link_extractors_exited, LINK_EXTRACTOR_COUNT,
-                             save_dir))
-        p.start()
-        p.name = f'saver-{i}'
-        saver_processes.append(p)
+    saver_processes = utils.start_workers(config['saver_workers'],
+                                          saver,
+                                          args=(output_queue, outfile_queue,
+                                                link_extractors_exited,
+                                                args.save_dir, config),
+                                          name='saver')
 
+    # wait for the savers to exit, which signifies the job is complete
     savers_exited = []
     while True:
-        if len(savers_exited) == SAVER_COUNT:
+        if len(savers_exited) == config['saver_workers']:
             if outfile_queue.empty():
                 break
         item = outfile_queue.get()
@@ -643,8 +578,9 @@ if __name__ == '__main__':
             savers_exited.append(item)
 
     assert outfile_queue.empty()
-    assert len(savers_exited) == SAVER_COUNT
+    assert len(savers_exited) == config['saver_workers']
 
+    # join all processes and close queues
     for p in page_extractor_processes:
         p.join()
 
@@ -662,3 +598,22 @@ if __name__ == '__main__':
     end = time.time()
     duration = end - start
     print(f'Total run time: {utils.hms_string(duration)}')
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--wiki-dir',
+        help='Wikidump directory including date (e.g. 20210401) to extract.')
+    parser.add_argument(
+        '--save-dir',
+        help=('Optional directory where the downloaded Wikipedia dump will be',
+              'saved. Defaults to current directory.'),
+        default='.')
+    parser.add_argument(
+        '--config',
+        help='YAML file used to configure the parameters of the extraction job.'
+    )
+    args = parser.parse_args()
+
+    main(args)

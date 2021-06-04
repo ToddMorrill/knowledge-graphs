@@ -1,0 +1,7 @@
+page_extractor_workers: -1 # -1 means all cores, can optionally be limited
+link_extractor_workers: -1 # -1 means all cores, can optionally be limited
+saver_workers: 1 # processes very quickly, no need for more workers 
+page_queue_maxsize: 100 # see calibrate.py for an appropriate setting
+output_queue_maxsize: 0  # capped at 32768 but won't grow larger than 100
+num_pages_batch_size: 1000 # number of pages to include in an extraction batch
+num_pages_in_json: 100000 # number of pages worth of links to be included in a JSON shard

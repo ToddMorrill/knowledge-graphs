@@ -3,10 +3,15 @@
   advantage of all available CPUs and keeping them 100% utilized on productive
   work. See mp_example.md for a motivating example of the architecture.
 
+  Experimenting with parameters below, you will note that this application is
+  CPU bound. Adding CPU cores reduces the compute time. This application
+  requires a minimum of ~200Mb of memory per CPU used.
+
 Examples:
     $ python calibrate.py \
         --file-path /Users/tmorrill002/Documents/datasets/wikipedia/enwiki-20210401-pages-articles-multistream1.xml-p1p41242.bz2 \
-        --mem-limit-gb 16 
+        --mem-limit-gb 16 \
+        --cpu-limit 16
 """
 import argparse
 from collections import defaultdict, Counter
@@ -136,7 +141,7 @@ def main(args):
 
     # get memory used to store 100_000 pages worth of links
     link_dict_batches = num_pages_in_json / num_pages
-    link_dict_memory = link_dict_batches * links_memory
+    link_dict_memory = link_dict_batches * combine_save_memory
 
     memory_used = processes_page_memory + processes_links_memory + link_dict_memory
 
@@ -171,7 +176,8 @@ if __name__ == '__main__':
         type=float)
     parser.add_argument(
         '--cpu-limit',
-        help='Maximum number of CPUs the application should use. If not specified, this defaults to 100% of available CPUs.')
+        help='Maximum number of CPUs the application should use. If not specified, this defaults to 100% of available CPUs.',
+        type=int)
     args = parser.parse_args()
 
     main(args)
