@@ -564,7 +564,7 @@ def main(args):
                                           saver,
                                           args=(output_queue, outfile_queue,
                                                 link_extractors_exited,
-                                                args.save_dir, config),
+                                                config),
                                           name='saver')
 
     # wait for the savers to exit, which signifies the job is complete

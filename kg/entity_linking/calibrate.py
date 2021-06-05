@@ -5,7 +5,7 @@
 
   Experimenting with parameters below, you will note that this application is
   CPU bound. Adding CPU cores reduces the compute time. This application
-  requires a minimum of ~200Mb of memory per CPU used.
+  requires a minimum of ~400Mb of memory per CPU used.
 
 Examples:
     $ python calibrate.py \

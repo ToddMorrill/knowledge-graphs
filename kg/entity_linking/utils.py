@@ -2,6 +2,7 @@ import hashlib
 import multiprocessing as mp
 import os
 import shutil
+from typing import Callable
 
 BUF_SIZE = 65536  # 2^16 bytes, read file in chunks for hexdigest
 
@@ -93,13 +94,13 @@ def get_queue(initial_items: list = [],
     return queue
 
 
-def start_workers(num_processes: int, target: function, args: tuple,
+def start_workers(num_processes: int, target: Callable, args: tuple,
                   name: str) -> list:
     """Start worker processes and target the specified function.
 
     Args:
         num_processes (int): Number of worker processes.
-        target (function): Function the worker should run.
+        target (Callable): Function the worker should run.
         args (tuple): Arguments to be passed to the function.
         name (str): Name of the processes.
 
