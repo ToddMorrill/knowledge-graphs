@@ -72,13 +72,25 @@ def populate_db(link_dir, save_dir, batch_size=10):
         f'Time taken to add {len(json_shard_files)} JSON shards to db: {utils.hms_string(duration)}'
     )
 
-def query_db(file_path, queries):
+def query_db(file_path, queries, return_top_result=True):
     if isinstance(queries, str):
         queries = [queries]
     results = []
     with SqliteDict(file_path) as db:  # re-open the same DB
         for query in queries:
             results.append(db.get(query))
+    
+    # select most frequently cited entity (as opposed to complete dictionary)
+    if return_top_result:
+        top_results = []
+        for idx, result in enumerate(results):
+            if result is None:
+                top_results.append(result)
+            else:
+                counter = Counter(result)
+                top_results.append(counter.most_common()[0][0])
+        return top_results
+        
     return results
 
 
@@ -90,8 +102,7 @@ def main(args):
         file_path = os.path.join(args.save_dir, 'db.sqlite')
         results = query_db(file_path, args.queries)
         for idx, result in enumerate(results):
-            counter = Counter(result)
-            print(f'Query: \'{args.queries[idx]}\', Top Hit:\'{counter.most_common()[0]}\'')
+            print(f'Query: \'{args.queries[idx]}\', Top Hit:\'{result}\'')
 
 
 
