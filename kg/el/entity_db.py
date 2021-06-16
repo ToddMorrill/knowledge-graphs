@@ -21,8 +21,8 @@ import time
 
 from sqlitedict import SqliteDict
 
-from kg.entity_linking import utils
-from kg.entity_linking.extract_wikipedia import LinkExtractor
+from kg.el import utils
+from kg.el.extract_wikipedia import LinkExtractor
 
 
 def merge_dicts(json_files):
