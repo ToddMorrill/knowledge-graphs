@@ -22,21 +22,31 @@ Implementation notes:
     - Train deep learning model directly
 
 Examples:
-    $ python supervised.py \
+    $ python -m kg.ner.supervised \
         --data-directory /Users/tmorrill002/Documents/datasets/conll/transformed
 """
 import argparse
+from itertools import groupby
+import os
+import pickle
+from types import SimpleNamespace
+from typing import Union
 
 import nltk
-nltk.download('maxent_ne_chunker')  # pretrained NER model
-nltk.download('words')  # used in pretrained NER model
-nltk.download('conll2000')
+# nltk.download('maxent_ne_chunker')  # pretrained NER model
+# nltk.download('words')  # used in pretrained NER model
+# nltk.download('conll2000')
 from nltk.corpus import conll2000
+from numpy.random import sample
 import pandas as pd
 from sklearn.metrics import classification_report
 import spacy
 from spacy.tokens import Doc
+import torch
+import yaml
 
+from kg.ner.model import LSTM, get_predictions, translate_predictions
+from kg.ner.preprocess import Preprocessor
 import kg.ner.utils as utils
 
 
@@ -199,6 +209,11 @@ class PretrainedEntityDetector(object):
             otherwise make multiclass predictions. Defaults to True.
         """
         self.binary = binary
+        self.categories = [
+            "LOCATION", "ORGANIZATION", "PERSON", "DURATION", "DATE",
+            "CARDINAL", "PERCENT", "MONEY", "MEASURE", "FACILITY", "GPE"
+        ]
+        self.categories += ["LOC", "PER", "ORG"]
 
     def extract(self, document: str, preprocess: bool = True) -> list:
         """Extract entities from the passed document.
@@ -233,10 +248,15 @@ class PretrainedEntityDetector(object):
         extractions = []
         i = 0
         while i < len(tree):
-            if isinstance(tree[i], nltk.Tree) and tree[i].label() == 'NE':
+            if isinstance(tree[i], nltk.Tree) and (
+                (tree[i].label() == 'NE') or
+                (tree[i].label() in self.categories)):
                 phrase = tree[i].leaves()
                 phrase_text = ' '.join([token for token, pos in phrase])
-                extractions.append((phrase_text, True))
+                if self.binary:
+                    extractions.append((phrase_text, True))
+                else:
+                    extractions.append((phrase_text, tree[i].label()))
                 i += 1
             else:
                 phrase = []
@@ -256,6 +276,41 @@ class SpacyEntityTypeDetector(object):
                  model='en_core_web_lg') -> None:
         self.entity_type_mapping = entity_type_mapping
         self.nlp = spacy.load(model)
+
+    @staticmethod
+    def _get_ent_spans(document):
+        # TODO: access spaCy information to perfectly reconstruct the sentence
+        spans = []
+        subspan = []
+        for tok in document:
+            if tok.ent_iob_ == 'B':
+                # dump existing span
+                if subspan:
+                    spans.append(subspan)
+                    subspan = []
+                subspan.append((tok, tok.ent_type_))
+            elif tok.ent_iob_ == 'I':
+                subspan.append((tok, tok.ent_type_))
+            else:
+                if subspan:
+                    spans.append(subspan)
+                spans.append([(tok, False)])
+                subspan = []
+        return spans
+
+    @staticmethod
+    def _cleanup_spans(spans):
+        final_spans = []
+        for span in spans:
+            tokens, entity_types = zip(*span)
+            joined_tokens = ' '.join([x.text for x in tokens])
+            final_spans.append((joined_tokens, entity_types[0]))
+        return final_spans
+
+    def extract(self, document: str):
+        output = self.nlp(document)
+        output = self._cleanup_spans(self._get_ent_spans(output))
+        return output
 
     @staticmethod
     def prepare_for_spacy(df):
@@ -334,6 +389,67 @@ class SpacyEntityTypeDetector(object):
         print(
             classification_report(eval_df['NER_Tag_Normalized'],
                                   eval_df['Entity_Type']))
+
+
+class PyTorchTypeDetector(object):
+    def __init__(self, config_file_path) -> None:
+        # load config file
+        with open(config_file_path, 'r') as f:
+            config = yaml.safe_load(f)
+        self.config = SimpleNamespace(**config)
+
+        # load preprocessor
+        preprocessor_file_path = os.path.join(self.config.run_dir,
+                                              'preprocessor.pickle')
+        with open(preprocessor_file_path, 'rb') as f:
+            self.preprocessor = pickle.load(f)
+
+        # load model
+        model_file_path = os.path.join(self.config.run_dir, 'model.pt')
+        state = torch.load(model_file_path)
+        self.model = LSTM(self.config)
+        self.model.load_state_dict(state['model'])
+
+    @staticmethod
+    def _consolidate_output(sentence):
+        spans = []
+        for key, group in groupby(sentence, lambda x: x[1]):
+            # join strings together
+            tokens = [x[0] for x in list(group)]
+            joined_string = ' '.join(tokens)
+            # TODO: clean this up.
+            # this was implemented so that this output will work nicely with kg.ner.unsupervised.prepare_entity_html
+            if key == 'O':
+                spans.append((joined_string, False))
+            else:
+                spans.append((joined_string, key))
+        return spans
+
+    def extract(self, document: Union[str, list]):
+        if isinstance(document, str):
+            document = [document]
+
+        prepared_sentences = self.preprocessor.preprocess(document)
+        output = self.model(prepared_sentences)
+        sample_predictions = get_predictions(output,
+                                             lengths=prepared_sentences[1],
+                                             concatenate=False)
+        preds = translate_predictions(sample_predictions,
+                                      self.preprocessor.idx_to_label)
+
+        tokenized_sentences = []
+        for doc in document:
+            tokenized_sentences.append(self.preprocessor._tokenize(doc))
+
+        final_output = []
+        for idx, pred in enumerate(preds):
+            tokens_tags = list(zip(tokenized_sentences[idx], pred))
+            # TODO: the model should really indicate IOB tags
+            # consolidate sequences of the output
+            grouped_tokens_tags = self._consolidate_output(tokens_tags)
+            final_output.extend(grouped_tokens_tags)
+
+        return final_output
 
 
 def main(args):

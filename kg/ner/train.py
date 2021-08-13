@@ -2,7 +2,7 @@
 This module implements the training routine for the specified model.
 
 Examples:
-    $ python train.py \
+    $ python -m kg.ner.train \
         --config configs/baseline.yaml
 
 Current supervised results (token level evaluation):

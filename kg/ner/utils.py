@@ -2,8 +2,8 @@ import os
 
 import nltk
 
-nltk.download('punkt')  # word tokenizer
-nltk.download('averaged_perceptron_tagger')  # pos tagger
+# nltk.download('punkt')  # word tokenizer
+# nltk.download('averaged_perceptron_tagger')  # pos tagger
 import pandas as pd
 
 
@@ -181,3 +181,40 @@ def merge_dfs(df, prediction_df):
     assert (
         eval_df['Token'] == eval_df['Predicted_Phrase']).sum() == len(eval_df)
     return eval_df
+
+
+def prepare_entity_html(entity_groupings, binary=True):
+    """Creates a formatted HTML string, underlining detected entities."""
+    string_groupings = []
+    for entity, flag in entity_groupings:
+        if flag:
+            if binary:
+                string_groupings.append(
+                    f'<u style="background-color:DodgerBlue;color:white;">{entity}</u>'
+                )
+            else:
+                string_groupings.append(
+                    f'<u style="background-color:DodgerBlue;color:white;">{entity}</u> <span style="background-color:LightGray;">({flag})</span>'
+                )
+        else:
+            string_groupings.append(entity)
+    formatted_text = ' '.join(string_groupings)
+    return formatted_text
+
+def prepare_entity_link_html(entity_groupings, entity_db):
+    # TODO: better integrate this with existing functionality
+    html = []
+    for span, entity_type in entity_groupings:
+        if entity_type:
+            top_hit = entity_db.query(span, k=1)[0]
+            if top_hit is None:
+                html.append(f'<u style="background-color:DodgerBlue;color:white;">{span}</u> <span style="background-color:LightGray;">({entity_type})</span>')
+                continue
+            # TODO: handle case where no hit is found but it is an entity
+            entity, count = top_hit[0]
+            link = entity_db.get_wikipedia_link(entity)
+            html.append(f'<a href="{link}">{span}</a> <span style="background-color:LightGray;">({entity_type}, {count})</span>')
+        else:
+            html.append(span)
+    final_html = ' '.join(html)
+    return final_html

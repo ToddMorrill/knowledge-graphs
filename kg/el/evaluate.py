@@ -10,7 +10,7 @@ import argparse
 import pandas as pd
 from sklearn.metrics import accuracy_score
 
-from kg.entity_linking.entity_db import query_db
+from kg.el.entity_db import EntityDB
 
 def extract_wikipedia_entity(x):
     if isinstance(x, str):
@@ -24,7 +24,9 @@ def main(args):
     # only query actual entities (ignore all other tokens)
     # retain positional info from original DF
     queries_df = aida_df[['Complete_Entity']].dropna()
-    query_results = query_db(args.db_file_path, queries_df['Complete_Entity'].values)
+    entity_db = EntityDB(args.db_file_path)
+    query_results = entity_db.query(queries_df['Complete_Entity'].values, k=1)
+    # query_results = query_db(args.db_file_path, queries_df['Complete_Entity'].values)
     queries_df['Query_Result'] = query_results
     # fill Nones in Query_Result column with --NME--
     queries_df['Query_Result'] = queries_df['Query_Result'].fillna('--NME--')

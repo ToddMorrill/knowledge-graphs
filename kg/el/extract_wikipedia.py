@@ -22,7 +22,7 @@ import xml.etree.ElementTree as etree
 import mwparserfromhell
 import yaml
 
-from kg.entity_linking import utils
+from kg.el import utils
 
 
 class WikiFileExtractor(object):

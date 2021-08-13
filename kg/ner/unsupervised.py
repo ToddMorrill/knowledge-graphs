@@ -33,8 +33,9 @@ import string
 
 import networkx
 import nltk
-nltk.download('conll2000')  # noun phrase evaluation
-nltk.download('stopwords')  # stopwords
+
+# nltk.download('conll2000')  # noun phrase evaluation
+# nltk.download('stopwords')  # stopwords
 from nltk.corpus import conll2000
 import numpy as np
 import pandas as pd

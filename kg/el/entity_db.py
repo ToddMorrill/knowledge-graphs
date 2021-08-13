@@ -3,12 +3,12 @@
 It takes about 21 minutes to process 211 shards.
 
 Examples:
-    $ python entity_db.py \
+    $ python -m kg.el.entity_db \
         --save-dir /Users/tmorrill002/Documents/datasets/wikipedia/20210401_sqlite \
         populate \
         --link-dir /Users/tmorrill002/Documents/datasets/wikipedia/links_20210401
     
-    $ python entity_db.py \
+    $ python -m kg.el.entity_db \
         --save-dir /Users/tmorrill002/Documents/datasets/wikipedia/20210401_sqlite \
         query \
         --queries 'New York' 'Mumbai' 'Shanghai'
@@ -18,6 +18,7 @@ import argparse
 from collections import Counter, defaultdict
 import os
 import time
+from typing import Union
 
 from sqlitedict import SqliteDict
 
@@ -54,6 +55,7 @@ def batch_add_to_db(json_files, db_file_path, batch_size=10):
         add_to_db(db_file_path, temp_dict)
         return None
 
+
 def populate_db(link_dir, save_dir, batch_size=10):
     # create save_dir if not '.'
     if save_dir != '.':
@@ -72,40 +74,79 @@ def populate_db(link_dir, save_dir, batch_size=10):
         f'Time taken to add {len(json_shard_files)} JSON shards to db: {utils.hms_string(duration)}'
     )
 
-def query_db(file_path, queries, return_top_result=True):
-    if isinstance(queries, str):
-        queries = [queries]
-    results = []
-    with SqliteDict(file_path) as db:  # re-open the same DB
+
+class EntityDB(object):
+    def __init__(self, db_file_path) -> None:
+        # open DB as read-only
+        self.db = SqliteDict(db_file_path, flag='r')
+
+    def query(self, queries: Union[str, list], k: int = -1) -> list[str]:
+        """Queries the sqlite database.
+
+        Args:
+            queries (Union[str, list]): String or list of string queries.
+            k (int, optional): -1 refers to all candidates while positive
+            integers correspond to the top k results. Defaults to -1.
+
+        Returns:
+            list[str]: Query results.
+        """
+        if isinstance(queries, str):
+            queries = [queries]
+
+        results = []
         for query in queries:
-            results.append(db.get(query))
-    
-    # select most frequently cited entity (as opposed to complete dictionary)
-    if return_top_result:
+            results.append(self.db.get(query))
+
+        # select most frequently cited entity (as opposed to complete dictionary)
         top_results = []
         for idx, result in enumerate(results):
             if result is None:
                 top_results.append(result)
             else:
                 counter = Counter(result)
-                top_results.append(counter.most_common()[0][0])
+                # entities, counts = zip(*counter.most_common())
+                if k == -1:
+                    top_results.append(counter.most_common())
+                elif k >= 0:
+                    top_results.append(counter.most_common()[:k])
+                else:
+                    raise ValueError(f'Argument k must be nonnegative or -1.')
         return top_results
-        
-    return results
+
+    def __del__(self):
+        self.db.close()
+
+    @staticmethod
+    def get_wikipedia_link(entity):
+        if entity is None:
+            return None
+        prepared_entity = entity.replace(' ', '_')
+        link = f'https://en.wikipedia.org/wiki/{prepared_entity}'
+        return link
+
+    def query_result_html(self, query, results):
+        html = []
+        header = f'<h4>Results for query: <i>{query}</i></h4>'
+        html.append(header)
+        html.append('<ul>')
+        for wiki_entry, count in results:
+            link = self.get_wikipedia_link(wiki_entry)
+            html.append(f'<li><a href="{link}">{wiki_entry}</a> ({count})</li>')
+        html.append('</ul>')
+        return '\n'.join(html)
 
 
 def main(args):
     if args.subparser == 'populate':
         populate_db(args.link_dir, args.save_dir, batch_size=10)
-    
+
     elif args.subparser == 'query':
         file_path = os.path.join(args.save_dir, 'db.sqlite')
-        results = query_db(file_path, args.queries)
+        entity_db = EntityDB(file_path)
+        results = entity_db.query(args.queries, k=2)
         for idx, result in enumerate(results):
             print(f'Query: \'{args.queries[idx]}\', Top Hit:\'{result}\'')
-
-
-
 
 
 if __name__ == '__main__':
@@ -119,7 +160,8 @@ if __name__ == '__main__':
     subparsers = parser.add_subparsers()
 
     # subparser for the populate command
-    populate_parser = subparsers.add_parser('populate', help='Populate the DB from the JSON shards.')
+    populate_parser = subparsers.add_parser(
+        'populate', help='Populate the DB from the JSON shards.')
     populate_parser.set_defaults(subparser='populate')
     populate_parser.add_argument(
         '--link-dir',
@@ -131,7 +173,8 @@ if __name__ == '__main__':
     query_parser.set_defaults(subparser='query')
     query_parser.add_argument(
         '--queries',
-        help='A sequence of queries (e.g. \'New York\', \'Mumbai\', \'Shanghai\').',
+        help=
+        'A sequence of queries (e.g. \'New York\', \'Mumbai\', \'Shanghai\').',
         required=True,
         nargs='*')
     args = parser.parse_args()
